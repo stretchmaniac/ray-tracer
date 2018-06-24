@@ -55,6 +55,15 @@ class Ray{
         }
     }
 
+    deserialize(){
+        if(this.children){
+            for(let child of this.children){
+                child.__proto__ = Ray.prototype;
+                child.deserialize();
+            }
+        }
+    }
+
     evaluate(t){
         return plus(this.start, scale(t, this.direction));
     }
@@ -63,6 +72,20 @@ class Ray{
 class FeatureCollection{
     constructor(features){
         this.subFeatures = features;
+        this.type = 'FeatureCollection'
+    }
+
+    deserialize(){
+        for(let i = 0; i < this.subFeatures.length; i++){
+            let t = this.subFeatures[i].type;
+            if(t === 'FeatureCollection'){
+                this.subFeatures[i].deserialize();
+            }else if(t === 'Sphere'){
+                this.subFeatures[i].__proto__ = Sphere.prototype;
+            }else if(t === 'PolyPlane'){
+                this.subFeatures[i].__proto__ = PolyPlane.prototype;
+            }
+        }
     }
 
     intersect(ray){
@@ -89,13 +112,14 @@ class Sphere{
         this.center = center;
         this.radius = radius;
         this.properties = properties;
+        this.type = 'Sphere'
     }
 
     static uniform(center, radius, opacity, specularity, color, indexOfRefraction){
         let properties = {
-            opacityFunction: function(loc){return opacity;},
-            specularityFunction: function(loc){return specularity;},
-            colorFunction: function(loc){return color;},
+            opacity: opacity,
+            specularity: specularity,
+            color: color,
             indexOfRefraction: indexOfRefraction
         };
 
@@ -168,9 +192,9 @@ class Sphere{
             if(!thisRef.properties.lightSource){
                 toReturn.surface = {
                     normal: normalize(minus(loc, thisRef.center)),
-                    opacity: thisRef.properties.opacityFunction(loc),
-                    specularity: thisRef.properties.specularityFunction(loc),
-                    color: thisRef.properties.colorFunction(loc),
+                    opacity: thisRef.properties.opacity,
+                    specularity: thisRef.properties.specularity,
+                    color: thisRef.properties.color,
                     indexOfRefraction: thisRef.properties.indexOfRefraction
                 };
             }
@@ -199,6 +223,7 @@ class PolyPlane{
         this.points = pts;
         this.normal = normalize(cross(minus(pts[2],pts[1]), minus(pts[1],pts[0])));
         this.properties = properties;
+        this.type = 'PolyPlane'
         if(dot(this.normal, orientationVector) < 0){
             this.normal = scale(-1, this.normal);
         }
@@ -206,9 +231,9 @@ class PolyPlane{
 
     static uniform(pts, orientationVector, opacity, specularity, color, indexOfRefraction){
         let properties = {
-            opacityFunction: function(loc){return opacity;},
-            specularityFunction: function(loc){return specularity;},
-            colorFunction: function(loc){return color;},
+            opacity: opacity,
+            specularity: specularity,
+            color: color,
             indexOfRefraction: indexOfRefraction
         };
 
@@ -285,9 +310,9 @@ class PolyPlane{
             if(!thisRef.properties.lightSource){
                 toReturn.surface = {
                     normal: thisRef.normal,
-                    opacity: thisRef.properties.opacityFunction(loc),
-                    specularity: thisRef.properties.specularityFunction(loc),
-                    color: thisRef.properties.colorFunction(loc),
+                    opacity: thisRef.properties.opacity,
+                    specularity: thisRef.properties.specularity,
+                    color: thisRef.properties.color,
                     indexOfRefraction: thisRef.properties.indexOfRefraction
                 }
             };
@@ -302,6 +327,161 @@ class PolyPlane{
         return [];
 
     }
+}
+
+function traceRay(featureCollection, environment, lightSources, ray, maxRecursion, currentDepth=0){
+    if(currentDepth === maxRecursion){
+        // max recursion achieved
+        ray.color = ray.medium.color;
+        return ray;
+    }
+
+    let collisions = featureCollection.intersect(ray);
+    if(collisions.length === 0){
+        // it hit nothing. Return the inky blackness (or whatever color it is) of the abyss
+        ray.color = [0,0,0];
+        for(let i = 0; i < 3; i++){
+            ray.color[i] = ray.medium.color[i] + (Math.random()-.5)*10;
+            ray.color[i] = Math.max(0, ray.color[i]);
+            ray.color[i] = Math.min(255, ray.color[i]);
+        }
+        return ray;
+    }
+    // the first one
+    let collision = collisions[0];
+
+    if(collision.object.properties.lightSource){
+        ray.brightness = collision.object.properties.lightSource.surfaceIntensity;
+        ray.color = collision.object.properties.lightSource.color;
+        return ray;
+    }
+
+    // first add ambient lighting
+    ray.brightness = environment.ambientConstant;
+    ray.color = [0,0,0];
+
+    // next calculate diffuse/specular lighting to all the light sources
+    for(let lightFeature of lightSources){
+        let light = lightFeature.properties.lightSource;
+        let diffuseIntensity = light.totalIntensity / light.diffuseSample.length;
+        for(let lightPoint of light.diffuseSample){
+            // determine if there is a path to the light source
+            let directionToLight = normalize(minus(lightPoint, collision.pos));
+            let newRay = new Ray(
+                plus(collision.pos,scale(1e-8,directionToLight)), 
+                directionToLight
+            );
+            newRay.medium = ray.medium;
+
+            let testCollisions = featureCollection.intersect(newRay);
+            if(testCollisions.length > 0 && testCollisions[0].object === lightFeature){
+                // use this light source sample point
+                let distToLight = mag(minus(lightPoint, collision.pos));
+                let mediumOpacityConst = Math.min(1, ray.medium.opacity * distToLight);
+                // it is important that directionToLight and collision.surface.normal are both unit vectors
+                // diffuse
+                let dBrightness = environment.diffuseConstant*dot(directionToLight, collision.surface.normal) * diffuseIntensity / distToLight**2;
+                ray.brightness += dBrightness;
+                // specular
+                let reflectDir = normalize(plus(
+                    scale(2, 
+                        minus(
+                            project(directionToLight, collision.surface.normal),
+                            directionToLight
+                        )
+                    ), 
+                    directionToLight
+                ));
+                let c1 = Math.abs(dot(reflectDir, normalize(ray.direction)))**environment.specularNarrownessConstant
+                ray.brightness += environment.specularStrengthConstant * c1 * diffuseIntensity*collision.surface.specularity / distToLight**2;
+            }
+        }
+    }
+
+    // now do a new ray!
+    let outwardDir = scale(-1, ray.direction);
+    let bounceDirection = plus(
+        scale(2, 
+            minus(
+                project(outwardDir, collision.surface.normal),
+                outwardDir
+            )
+        ), 
+        outwardDir
+    );
+
+    // Specular Reflection Ray
+    let childRay = new Ray(plus(collision.pos, scale(1e-8,bounceDirection)), bounceDirection);
+    // we say the ray is leaving the object if the normal is in the direction of the ray
+    let leaving = dot(childRay.direction, collision.surface.normal) > 0;
+    if(leaving){
+        childRay.medium = environment.medium;
+    }else{
+        childRay.medium = ray.medium;
+    }
+    let resultChild = traceRay(featureCollection,environment,lightSources, childRay, maxRecursion, currentDepth + 1);
+
+    // this ray is on the other side of the surface
+    // snell's law! 
+    let n1 = ray.medium.indexOfRefraction, n2 = 0;
+    let refractionIntoSurface = leaving;
+    if(!refractionIntoSurface){
+        n2 = environment.medium.indexOfRefraction;
+    }else{
+        n2 = collision.surface.indexOfRefraction;
+    }
+    let normalWithRay = project(ray.direction, collision.surface.normal);
+    let costheta1 = dot(ray.direction, normalWithRay) / (mag(ray.direction)*mag(normalWithRay));
+    let sintheta1 = Math.sqrt(1-costheta1**2);
+    let sintheta2 = (n1/n2)*sintheta1;
+    let totalInternalReflection = false;
+    let childRay2 = null;
+    if(Math.abs(sintheta2) > 1){
+        totalInternalReflection = true;
+    }else{
+        let theta2 = Math.asin(sintheta2);
+        let a = mag(normalWithRay);
+        let theta1 = Math.acos(costheta1);
+        let f = a*(Math.tan(theta1) - Math.tan(theta2));
+        let refractionDirection = plus(
+            ray.direction,
+            scale(f, normalize(minus(normalWithRay, ray.direction)))
+        );
+        childRay2 = new Ray(plus(collision.pos, scale(1e-8,normalWithRay)), refractionDirection);
+        childRay2.medium = !refractionIntoSurface ? environment.medium : {indexOfRefraction: n2, opacity: collision.surface.opacity, color: collision.surface.color};
+        if(refractionIntoSurface && collision.surface.opacity === 1){
+            childRay2.color = collision.surface.color;
+        }else{
+            childRay2 = traceRay(featureCollection,environment,lightSources, childRay2, maxRecursion, currentDepth + 1);
+        }
+    }
+
+    // combine the colors
+    let rayDist = mag(minus(ray.start, collision.pos));
+    let opacityConst = Math.min(ray.medium.opacity * rayDist, 1);
+    for(let i = 0; i < 3; i++){
+        if(ray.color[i] > 255){ray.color[i] = 255;}
+        let a1 = collision.surface.color[i]*ray.brightness;
+        let a2 = resultChild.color[i];
+        let a3 = childRay2.color[i];
+        let opacity = !refractionIntoSurface ? environment.medium.opacity : collision.surface.opacity;
+        if(totalInternalReflection){
+            opacity = 1;
+        }
+        // this function (z = x + y - xy) satisfies some nice properties
+        let normalConst = 1 - (collision.surface.specularity + (1-opacity) - collision.surface.specularity*(1-opacity));
+        let specConst = 0, opacConst = 0;
+        if((collision.surface.specularity + (1-opacity)) !== 0){
+            specConst = (collision.surface.specularity / (collision.surface.specularity + (1-opacity))) * (1 - normalConst);
+            opacConst = ((1-opacity) / (collision.surface.specularity + (1-opacity))) * (1 - normalConst);
+        }
+        ray.color[i] =
+            (1-opacityConst)*Math.min(normalConst * a1 + specConst * a2 + opacConst * a3, 255) +
+            opacityConst * ray.medium.color[i];
+    }
+
+    return ray;
+
 }
 
 function dot(a,b){
@@ -407,5 +587,6 @@ module.exports = {
     normalize:normalize,
     mag:mag,
     cross:cross,
-    scale:scale
+    scale:scale,
+    traceRay: traceRay
 }
