@@ -1,46 +1,20 @@
-
-
-let mathjs = require('mathjs');
-let colorConvert = require('color-convert');
+let gaussianRand = require('gauss-random');
 
 class Camera{
-    constructor(location, orientation, lensWidth){
+    constructor(location, orientation, lensWidth, resolution){
         this.location = location;
         this.orientation = orientation;
         this.lensWidth = lensWidth;
+        this.resolution = resolution;
     }
 
-    getRays(resolution){
-        // divided viewing space into resolution^2 little squares
-        // by default the camera points in the -z direction
-        let rays = [];
-        let d = this.lensWidth / resolution;
-        let countX = 0, countY = 0;
+    // suppose the detector lies on the interval [-1,1] x [-1,1]
+    getRay(unitLocation){
+        let rawPt = [unitLocation[0]*this.lensWidth/2, -unitLocation[1]*this.lensWidth/2, 1];
+        let rotatedPt = normalize(matColMult(this.orientation, rawPt));
+        let newRay = new Ray(plus(this.location, rotatedPt), rotatedPt);
 
-        let rotate = (pt, orientation) => {
-            return matColMult(orientation, pt);
-        }
-
-        for(let i = -this.lensWidth/2 + d/2; i < this.lensWidth/2; i += d){
-            countX++;
-            countY = 0;
-            for(let j = -this.lensWidth/2 + d/2; j < this.lensWidth/2; j += d){
-                countY++;
-                // this is the center of the pixel
-                let rawPt = [i,j,1];
-                let childrenPts = [[i+d/3,j+d/3,1], [i-d/3,j+d/3,1], [i+d/3,j-d/3,1], [i-d/3,j-d/3,1]];
-                // transform according to the orientation, then translate to the location
-                let rotatedPt = rotate(rawPt, this.orientation);
-                let rotatedChildren = childrenPts.map(x => rotate(x, this.orientation));
-
-                let newRay = new Ray(plus(this.location,rotatedPt), rotatedPt);
-                newRay.children = rotatedChildren.map(x => new Ray(plus(this.location,x), x));
-                newRay.pixel = [countX-1, countY-1];
-                rays.push(newRay);
-            }
-        }
-
-        return rays;
+        return newRay;
     }
 }
 
@@ -53,15 +27,10 @@ class Ray{
         if(mag(direction) === 0){
             throw new Error('direction must be nonzero');
         }
-    }
-
-    deserialize(){
-        if(this.children){
-            for(let child of this.children){
-                child.__proto__ = Ray.prototype;
-                child.deserialize();
-            }
-        }
+        // default medium 
+        this.medium = {
+            color:[0,0,0]
+        };
     }
 
     evaluate(t){
@@ -82,8 +51,10 @@ class FeatureCollection{
                 this.subFeatures[i].deserialize();
             }else if(t === 'Sphere'){
                 this.subFeatures[i].__proto__ = Sphere.prototype;
+                this.subFeatures[i].deserialize();
             }else if(t === 'PolyPlane'){
                 this.subFeatures[i].__proto__ = PolyPlane.prototype;
+                this.subFeatures[i].deserialize();
             }
         }
     }
@@ -105,6 +76,71 @@ class FeatureCollection{
     }
 }
 
+// bidirectional reflectance distribution function
+class BRDF{
+    // n ranges from 0 to 1, where 0 is perfectly reflective and 
+    // 1 is perfectly diffuse
+    static variableGlossy(n){
+        let brdf = {};
+        brdf.method = 'quick_n_dirty';
+        brdf.properties = {
+            lobeSize:(2*n)**2
+        };
+        brdf.__proto__ = BRDF.prototype;
+        return brdf;
+    }
+
+    // gives a sample of the most likely vectors to 
+    // reflect in the direction of outVec
+    // should return a list of rays
+    inverseReflectionSample(normal, outVec, numToSample){
+        if(this.method === 'quick_n_dirty'){
+            // we assume that the distribution is symmetric, so an inverse 
+            // sample is the same as a normal sample 
+            let samples = [];
+            let newIn = scale(-1, outVec);
+            for(let k = 0; k < numToSample; k++){
+                samples.push(new Ray([0,0,0], this.sample(newIn, normal)));
+            }
+            return samples; 
+        }
+    }
+
+    sample(inVec, normal){
+        if(this.method === 'quick_n_dirty'){
+            // a little hacky, but you should have seen what I had before
+            let reflected = reflect(inVec, normal); 
+            let scaled = normalize(reflected);
+            let validDirection = false;
+            let finalPt = null;
+            while(validDirection === false){
+                let randomDirection = [Math.random()-.5, Math.random()-.5, Math.random()-.5];
+                // this gives us our direction
+                let perpComponent = minus(randomDirection, project(randomDirection, scaled));
+                perpComponent = normalize(perpComponent);
+                // now our angle difference 
+                let newAngleOffset = gaussianRand() * this.properties.lobeSize;
+                finalPt = plus(scale(Math.cos(newAngleOffset), scaled), scale(Math.sin(newAngleOffset), perpComponent));
+
+                validDirection = dot(finalPt, normal) >= 0;
+            }
+            return finalPt;
+        }
+    }
+
+    // gives the associated brightness and color for an input ray in the 
+    // direction of outVec
+    reflectFunc(inVec, normal, outVec){
+        if(this.method === 'quick_n_dirty'){
+            let reflected = reflect(inVec, normal);
+            let angleDiff = Math.acos(dot(reflected, outVec) / (mag(reflected)*mag(outVec)));
+            
+            let prob = 1/(2*Math.PI)**(1/2) * Math.E**(-1*angleDiff**2 / 2);
+            return prob;
+        }
+    }
+}
+
 // intersect function returns list of intersections with given ray (t>0), sorted 
 // by t
 class Sphere{
@@ -115,15 +151,19 @@ class Sphere{
         this.type = 'Sphere'
     }
 
-    static uniform(center, radius, opacity, specularity, color, indexOfRefraction){
+    static uniform(center, radius, color, lightSource){
         let properties = {
-            opacity: opacity,
-            specularity: specularity,
             color: color,
-            indexOfRefraction: indexOfRefraction
+            lightSource:lightSource,
         };
 
         return new Sphere(center,radius,properties);
+    }
+
+    deserialize(){
+        if(this.properties.brdf){
+            this.properties.brdf.__proto__ = BRDF.prototype;
+        }
     }
 
     // intersection object:
@@ -188,16 +228,10 @@ class Sphere{
                 object:thisRef,
                 surface:{}
             }
-
-            if(!thisRef.properties.lightSource){
-                toReturn.surface = {
-                    normal: normalize(minus(loc, thisRef.center)),
-                    opacity: thisRef.properties.opacity,
-                    specularity: thisRef.properties.specularity,
-                    color: thisRef.properties.color,
-                    indexOfRefraction: thisRef.properties.indexOfRefraction
-                };
-            }
+            toReturn.surface = {
+                normal: normalize(minus(loc, thisRef.center)),
+                color: thisRef.properties.color
+            };
 
             return toReturn;
         }
@@ -229,15 +263,19 @@ class PolyPlane{
         }
     }
 
-    static uniform(pts, orientationVector, opacity, specularity, color, indexOfRefraction){
+    static uniform(pts, orientationVector, color, lightSource){
         let properties = {
-            opacity: opacity,
-            specularity: specularity,
             color: color,
-            indexOfRefraction: indexOfRefraction
+            lightSource:lightSource
         };
 
         return new PolyPlane(pts,orientationVector,properties);
+    }
+
+    deserialize(){
+        if(this.properties.brdf){
+            this.properties.brdf.__proto__ = BRDF.prototype;
+        }
     }
 
     intersect(ray){
@@ -306,16 +344,10 @@ class PolyPlane{
                 object:thisRef,
                 surface:{}
             };
-
-            if(!thisRef.properties.lightSource){
-                toReturn.surface = {
-                    normal: thisRef.normal,
-                    opacity: thisRef.properties.opacity,
-                    specularity: thisRef.properties.specularity,
-                    color: thisRef.properties.color,
-                    indexOfRefraction: thisRef.properties.indexOfRefraction
-                }
-            };
+            toReturn.surface = {
+                normal: thisRef.normal,
+                color: thisRef.properties.color
+            }
 
             return toReturn;
         }
@@ -325,163 +357,66 @@ class PolyPlane{
             return [intersectObject(pt, this)];
         }
         return [];
-
     }
 }
 
-function traceRay(featureCollection, environment, lightSources, ray, maxRecursion, currentDepth=0){
-    if(currentDepth === maxRecursion){
-        // max recursion achieved
-        ray.color = ray.medium.color;
-        return ray;
-    }
-
-    let collisions = featureCollection.intersect(ray);
-    if(collisions.length === 0){
-        // it hit nothing. Return the inky blackness (or whatever color it is) of the abyss
+function traceRay(featureCollection, lightSources, environment, ray, depth, branchingFactor){
+    if(depth <= 0){
+        // black
         ray.color = [0,0,0];
-        for(let i = 0; i < 3; i++){
-            ray.color[i] = ray.medium.color[i] + (Math.random()-.5)*10;
-            ray.color[i] = Math.max(0, ray.color[i]);
-            ray.color[i] = Math.min(255, ray.color[i]);
-        }
-        return ray;
-    }
-    // the first one
-    let collision = collisions[0];
-
-    if(collision.object.properties.lightSource){
-        ray.brightness = collision.object.properties.lightSource.surfaceIntensity;
-        ray.color = collision.object.properties.lightSource.color;
         return ray;
     }
 
-    // first add ambient lighting
-    ray.brightness = environment.ambientConstant;
-    ray.color = [0,0,0];
+    // find first collision 
+    let collisions = featureCollection.intersect(ray);
 
-    // next calculate diffuse/specular lighting to all the light sources
-    for(let lightFeature of lightSources){
-        let light = lightFeature.properties.lightSource;
-        let diffuseIntensity = light.totalIntensity / light.diffuseSample.length;
-        for(let lightPoint of light.diffuseSample){
-            // determine if there is a path to the light source
-            let directionToLight = normalize(minus(lightPoint, collision.pos));
-            let newRay = new Ray(
-                plus(collision.pos,scale(1e-8,directionToLight)), 
-                directionToLight
-            );
-            newRay.medium = ray.medium;
-
-            let testCollisions = featureCollection.intersect(newRay);
-            if(testCollisions.length > 0 && testCollisions[0].object === lightFeature){
-                // use this light source sample point
-                let distToLight = mag(minus(lightPoint, collision.pos));
-                let mediumOpacityConst = Math.min(1, ray.medium.opacity * distToLight);
-                // it is important that directionToLight and collision.surface.normal are both unit vectors
-                // diffuse
-                let dBrightness = environment.diffuseConstant*dot(directionToLight, collision.surface.normal) * diffuseIntensity / distToLight**2;
-                ray.brightness += dBrightness;
-                // specular
-                let reflectDir = normalize(plus(
-                    scale(2, 
-                        minus(
-                            project(directionToLight, collision.surface.normal),
-                            directionToLight
-                        )
-                    ), 
-                    directionToLight
-                ));
-                let c1 = Math.abs(dot(reflectDir, normalize(ray.direction)))**environment.specularNarrownessConstant
-                ray.brightness += environment.specularStrengthConstant * c1 * diffuseIntensity*collision.surface.specularity / distToLight**2;
-            }
-        }
+    if(collisions.length === 0){
+        // inky darkness of nothing
+        ray.color = [0,0,0];
+        return ray;
     }
 
-    // now do a new ray!
-    let outwardDir = scale(-1, ray.direction);
-    let bounceDirection = plus(
-        scale(2, 
-            minus(
-                project(outwardDir, collision.surface.normal),
-                outwardDir
-            )
-        ), 
-        outwardDir
+    let collision = collisions[0]; 
+    let obj = collision.object;
+
+    // if a light source, stop
+    if(obj.properties.lightSource){
+        ray.color = obj.properties.color;
+        return ray;
+    }
+
+    // use brdf to sample reflection rays 
+    let brdf = obj.properties.brdf; 
+
+    let outVec = scale(-1, ray.direction);
+    // inverseReflectionSample returns a list of rays that start at [0,0] and 
+    // point in the outgoing direction
+    let reflectionSampleRays = brdf.inverseReflectionSample(collision.surface.normal, outVec, branchingFactor);
+    // translate the reflected rays to start at the collision point. Also offset them 
+    // slightly so that they don't intersect the surface they start on 
+    reflectionSampleRays = reflectionSampleRays.map(x => new Ray(plus(x.start, collision.pos, scale(10**(-8),x.direction)), x.direction));
+    // now trace the resulting rays. Recall traceRay returns the input ray with just the color changed
+    let reflectionInputs = reflectionSampleRays.map(
+        x => traceRay(featureCollection, lightSources, environment, x, depth-1, branchingFactor)
     );
-
-    // Specular Reflection Ray
-    let childRay = new Ray(plus(collision.pos, scale(1e-8,bounceDirection)), bounceDirection);
-    // we say the ray is leaving the object if the normal is in the direction of the ray
-    let leaving = dot(childRay.direction, collision.surface.normal) > 0;
-    if(leaving){
-        childRay.medium = environment.medium;
-    }else{
-        childRay.medium = ray.medium;
+    
+    // use brdf to calculate outputs 
+    // reflectionInputs returns a weight -- the probability that the ray will 
+    // let reflectionWeights = reflectionInputs.map(x => brdf.reflectFunc(x.direction, collision.surface.normal, outVec));    
+    
+    // calculate average of outputs
+    let averageColor = [0,0,0];
+    for(let out of reflectionInputs){
+        averageColor = plus(averageColor, out.color); 
     }
-    let resultChild = traceRay(featureCollection,environment,lightSources, childRay, maxRecursion, currentDepth + 1);
-
-    // this ray is on the other side of the surface
-    // snell's law! 
-    let n1 = ray.medium.indexOfRefraction, n2 = 0;
-    let refractionIntoSurface = leaving;
-    if(!refractionIntoSurface){
-        n2 = environment.medium.indexOfRefraction;
-    }else{
-        n2 = collision.surface.indexOfRefraction;
+    averageColor = scale(1/reflectionInputs.length, averageColor);
+    // the surface absorbs light 
+    for(let j = 0; j < 3; j++){
+        averageColor[j] *= obj.properties.color[j] / 255;
     }
-    let normalWithRay = project(ray.direction, collision.surface.normal);
-    let costheta1 = dot(ray.direction, normalWithRay) / (mag(ray.direction)*mag(normalWithRay));
-    let sintheta1 = Math.sqrt(1-costheta1**2);
-    let sintheta2 = (n1/n2)*sintheta1;
-    let totalInternalReflection = false;
-    let childRay2 = null;
-    if(Math.abs(sintheta2) > 1){
-        totalInternalReflection = true;
-    }else{
-        let theta2 = Math.asin(sintheta2);
-        let a = mag(normalWithRay);
-        let theta1 = Math.acos(costheta1);
-        let f = a*(Math.tan(theta1) - Math.tan(theta2));
-        let refractionDirection = plus(
-            ray.direction,
-            scale(f, normalize(minus(normalWithRay, ray.direction)))
-        );
-        childRay2 = new Ray(plus(collision.pos, scale(1e-8,normalWithRay)), refractionDirection);
-        childRay2.medium = !refractionIntoSurface ? environment.medium : {indexOfRefraction: n2, opacity: collision.surface.opacity, color: collision.surface.color};
-        if(refractionIntoSurface && collision.surface.opacity === 1){
-            childRay2.color = collision.surface.color;
-        }else{
-            childRay2 = traceRay(featureCollection,environment,lightSources, childRay2, maxRecursion, currentDepth + 1);
-        }
-    }
-
-    // combine the colors
-    let rayDist = mag(minus(ray.start, collision.pos));
-    let opacityConst = Math.min(ray.medium.opacity * rayDist, 1);
-    for(let i = 0; i < 3; i++){
-        if(ray.color[i] > 255){ray.color[i] = 255;}
-        let a1 = collision.surface.color[i]*ray.brightness;
-        let a2 = resultChild.color[i];
-        let a3 = childRay2.color[i];
-        let opacity = !refractionIntoSurface ? environment.medium.opacity : collision.surface.opacity;
-        if(totalInternalReflection){
-            opacity = 1;
-        }
-        // this function (z = x + y - xy) satisfies some nice properties
-        let normalConst = 1 - (collision.surface.specularity + (1-opacity) - collision.surface.specularity*(1-opacity));
-        let specConst = 0, opacConst = 0;
-        if((collision.surface.specularity + (1-opacity)) !== 0){
-            specConst = (collision.surface.specularity / (collision.surface.specularity + (1-opacity))) * (1 - normalConst);
-            opacConst = ((1-opacity) / (collision.surface.specularity + (1-opacity))) * (1 - normalConst);
-        }
-        ray.color[i] =
-            (1-opacityConst)*Math.min(normalConst * a1 + specConst * a2 + opacConst * a3, 255) +
-            opacityConst * ray.medium.color[i];
-    }
-
+    ray.color = averageColor;
+    ray.dist = mag(minus(ray.start, collision.pos));
     return ray;
-
 }
 
 function dot(a,b){
@@ -574,9 +509,15 @@ function project(a,b){
     return scale(dot(a,b)/dot(b,b), b);
 }
 
+// inVec points into the surface 
+function reflect(inVec, normal){
+    return minus(inVec, scale(2, project(inVec, normal)));
+}
+
 module.exports = {
     Sphere: Sphere,
     PolyPlane: PolyPlane,
+    BRDF: BRDF,
     FeatureCollection: FeatureCollection,
     Camera: Camera,
     Ray: Ray,
