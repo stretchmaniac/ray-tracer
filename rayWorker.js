@@ -5,7 +5,7 @@ const PoissonDisk = require('poisson-disk-sampling')
 module.exports = function(self){
 
     let featureCollection = null;
-    let lightSources = [];
+    let lightCollection = [];
     let environment = {};
     let basic = false;
     let camera = null;
@@ -15,14 +15,15 @@ module.exports = function(self){
         if(type === 'overhead'){
             camera = e.data[1];
             featureCollection = e.data[2];
-            lightSources = e.data[3];
+            lightCollection = e.data[3];
             environment = e.data[4];
             basic = e.data[5];
             // reattach methods that were stripped during serialization
             featureCollection.__proto__ = Geometry.FeatureCollection.prototype;
+            lightCollection.__proto__ = Geometry.FeatureCollection.prototype;
             featureCollection.deserialize();
+            lightCollection.deserialize();
             camera.__proto__ = Geometry.Camera.prototype;
-
         }else if(type === 'job'){
             // a set of locations to trace
             let locations = e.data[1];
@@ -36,7 +37,7 @@ module.exports = function(self){
             }
             let bufferIndex = 0;
             const pixWidth = 2 / camera.resolution;
-
+            
             function sendBuffer(buffer){
                 postMessage(['update', pixelBuffer.slice(0, bufferIndex)]);
                 bufferIndex = 0;
@@ -61,8 +62,8 @@ module.exports = function(self){
                     let ray = camera.getRay(pos);
                     let localAverage = [0,0,0];
                     for(let j = 0; j < environment.samplesPerPoint; j++){
-                        const result = Geometry.traceRay(featureCollection, lightSources, environment, ray, environment.rayDepth, environment.rayBranching);
-                        localAverage = Geometry.plus(localAverage, result.color);
+                        const resultColor = Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.rayDepth);
+                        localAverage = Geometry.plus(localAverage, resultColor);
                     }
                     averageColor = Geometry.plus(averageColor, Geometry.scale(1/environment.samplesPerPoint, localAverage));
                     count++;

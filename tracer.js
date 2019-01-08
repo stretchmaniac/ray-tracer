@@ -14,14 +14,14 @@ let colorConvert = require('color-convert');
 */
 
 let featureCollection = null;
-let lightSources = [];
+let lightCollection = null;
 let environment = {
     ambientConstant:.4,
     diffuseConstant:.5,
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:50,
+    samplesPerPoint:600,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -31,7 +31,7 @@ let environment = {
     rayBranching:1
 }
 
-const brightnessTransform = x => x**(1/2);
+const brightnessTransform = x => x;
 
 // body onload
 window.init = function(){
@@ -44,6 +44,7 @@ window.init = function(){
 function initFeatures(){
 
     let features = [];
+    let lightFeatures  = [];
 
     let k = 6;
     let planes = [
@@ -57,8 +58,13 @@ function initFeatures(){
     let normals = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
     for(let p=0; p<planes.length; p++){
         let plane = Geometry.PolyPlane.uniform(planes[p],normals[p],[255,255,255],p === 0 ? true : false);
-        plane.properties.brdf = Geometry.BRDF.variableGlossy(p === 3 ? .4 : .8);
-        features.push(plane);
+        plane.properties.brdf = Geometry.BRDF.variableGlossy(p === 3 ? .8 : .8);
+        if(p !== 1){
+            features.push(plane);
+        }
+        if(p === 0){
+            lightFeatures.push(plane);
+        }
     }
 
     // cube on the ground 
@@ -77,12 +83,13 @@ function initFeatures(){
     let pos = [-2,-k+r,0];
 
     // ball on the ground
-    let ball = Geometry.Sphere.uniform(pos, r, [100,255,255], false);
-    ball.properties.brdf = Geometry.BRDF.variableGlossy(0);
+    let ball = Geometry.Sphere.uniform(pos, r, [50,150,100], false);
+    ball.properties.brdf = Geometry.BRDF.variableGlossy(.5);
 
     features.push(ball);
 
     featureCollection = new Geometry.FeatureCollection(features);
+    lightCollection = new Geometry.FeatureCollection(lightFeatures);
 }
 
 function trace(traceFinished, basic, imageID){
@@ -122,7 +129,7 @@ function trace(traceFinished, basic, imageID){
     let finishedWorkers = 0;
     for(let k = 0; k < workerJobs.length; k++){
         let newWorker = work(require('./rayWorker.js'));
-        newWorker.postMessage(['overhead', camera, featureCollection, lightSources, environment, basic]);
+        newWorker.postMessage(['overhead', camera, featureCollection, lightCollection, environment, basic]);
         newWorker.postMessage(['job', workerJobs[k]]);
         (function(){
             newWorker.addEventListener('message', function(e){
