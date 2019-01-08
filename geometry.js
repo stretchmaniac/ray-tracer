@@ -265,6 +265,265 @@ class BRDF{
     }
 }
 
+// "Cone" ( --Audrey)
+class Frustum{
+    constructor(base1Center, base2Center, r1, r2, properties){
+        let normedHeight = normalize(minus(base2Center, base1Center));
+        let normedV1 = normalize(perpVec(normedHeight));
+        let normedV2 = cross(normedHeight, normedHeight, normedV1);
+        this.base1 = new Disk(base1Center, scale(r1, normedV1), scale(r1, normedV2), normedHeight, properties);
+        this.base2 = new Disk(base2Center, scale(r2, normedV1), scale(r2, normedV2), scale(-1, normedHeight), properties);
+        this.base1Center = base1Center;
+        this.base2Center = base2Center; 
+        this.r1 = r1;
+        this.r2 = r2;
+        this.properties = properties;
+        this.type = 'Frustum';
+        let h = mag(minus(base2Center, base1Center));
+        this.height = h;
+        this.area = Math.PI*(r1**2 + r2**2 + (r1 + r2)*Math.sqrt((r2-r1)**2 + h**2)); 
+    }
+
+    static uniform(base1Center, base2Center, r1, r2, color, lightSource){
+        const properties = {
+            color: color,
+            lightSource: lightSource
+        };
+        return new Frustum(base1Center, base2Center, r1, r2, properties);
+    }
+
+    deserialize(){
+        if(this.properties.brdf){
+            this.properties.brdf.__proto__ = BRDF.prototype;
+        }
+    }
+
+    sample(){
+        let b1Area = Math.PI*this.r1**2;
+        let b2Area = Math.PI*this.r2**2;
+        let otherArea = this.area - b1Area - b2Area;
+        let b1CutOff = b1Area / this.area;
+        let b2CutOff = (b1Area + b2Area) / this.area;
+        let r = Math.random();
+        if(r < b1CutOff){
+            // pick from first disk 
+            return this.base1.sample();
+        }
+        if(r < b2CutOff){
+            // pick from second disk 
+            return this.base2.sample();
+        }
+        // choose from slanted part. This is 
+        // essentially sampling from a sector of 
+        // a circle
+        let a = this.r2*this.height / (this.r1 - this.r2);
+        let bigR = Math.sqrt(this.r1**2 + (this.height + a)**2);
+        let littleR = Math.sqrt(this.r2**2 + a**2);
+        let sectorAngle = 2*Math.PI*this.r1/bigR;
+        // r \in [littleR, bigR]
+        // \theta \in [0, sectorAngle]
+        while(true){
+            let sampledR = Math.random() * (bigR - littleR) + littleR;
+            let sampledT = Math.random() * sectorAngle;
+            // keep with probability sampledR / bigR
+            // see https://mathoverflow.net/questions/9991/how-can-i-sample-uniformly-from-a-surface
+            if(Math.random() <= sampledR / bigR){
+                let j = (sampledR-littleR)/(bigR-littleR);
+                let flatR = j*(this.r2-this.r1)+this.r1; 
+                let normedV1 = normalize(this.base1.v1);
+                let normedV2 = nromalize(this.base1.v2);
+                let actualPt = plus(
+                    plus(this.base1Center, scale(j, minus(this.base2Center, this.base1Center))),
+                    plus(scale(flatR*Math.cos(sampledT), normedV1), scale(flatR*Math.sin(sampledT), normedV2))
+                );
+                // find 2 tangent vectors and compute cross product to get normal vector
+                // first tangent: vector to bottom
+                let bottomPt = plus(this.base1Center, 
+                    plus(
+                        scale(Math.cos(sampledT), this.base1.v1), 
+                        scale(Math.sin(sampledT), this.base1.v2)
+                    )
+                );
+                let tangent1 = minus(actualPt, bottomPt);
+                // second tangent: around radius of circle
+                let component1 = project(actualPt, this.base1.v1);
+                let component2 = project(actualPt, this.base1.v2);
+                // negatives are important. The cross product was designed to create an 
+                // outward pointing normal
+                let newC1 = component2;
+                let newC2 = -component1;
+                let tangent2 = plus(scale(newC1, this.base1.v1), scale(newC2, this.base1.v2));
+                let normal = normalize(cross(tangent1, tangent2));
+
+                return {pt: actualPt, dir: normal, color:this.properties.color}
+            }
+        }
+    }
+
+    intersect(ray){
+        // transform to origin 
+        
+    }
+}
+
+class Disk{
+    // |v1| = |v2| = r, v1 and v2 span the plane that the disk lies in
+    // normalDir has to point to one side of the disk
+    constructor(center, v1, v2, normalDir, properties){
+        this.center = center;
+        this.radius = mag(v1);
+        // create orthogonal basis 
+        this.v1 = v1;
+        this.v2 = cross(v1, cross(v1,v2));
+        this.v2 = scale(this.radius, normalize(this.v2));
+        this.normal = cross(this.v1, this.v2);
+        if(dot(this.normal, normalDir) < 0){
+            this.normal = scale(-1, this.normal);
+        }
+        this.properties = properties;
+        this.type = 'Disk';
+        this.area = Math.PI*this.radius**2;
+    }
+
+    static uniform(center, radiusVec, color, lightSource){
+        const properties = {
+            color:color,
+            lightSource: lightSource
+        };
+        return new Disk(center, radiusVec, properties);
+    }
+
+    deserialize(){
+        if(this.properties.brdf){
+            this.properties.brdf.__proto__ = BRDF.prototype;
+        }
+    }
+
+    sample(){
+        // sample from unit circle and extend to disk
+        let pt = [2*Math.random() - 1, 2*Math.random() - 1];
+        while(pt[0]**2 + pt[1]**2 > 1){
+            pt = [2*Math.random() - 1, 2*Math.random() - 1];
+        }
+
+        let actualPt = plus(scale(pt[0], this.v1), scale(pt[1], this.v2));
+        return {pt: actualPt, dir: this.normal, color:this.properties.color};
+    }
+
+    intersect(ray){
+        // transform so that disk lies on xy plane
+        // first translate by center 
+        let newStart = minus(ray.start, this.center);
+        // so this linear transformation maps this.normal to [0,0,1]
+        let newDir = matchTransformation(ray.direction, this.normal, [0,0,1]);
+        // this was a distance preserving transformation 
+        if(newDir[2] === 0){
+            // this is more of a convention than anything
+            return [];
+        }
+        let t = -newStart[2] / newDir[2];
+        let intersection = plus(newStart, scale(t, newDir));
+        if(mag(intersection) <= this.radius){
+            // transform back
+            let actualIntersection = matchTransformation(intersection, [0,0,1], this.normal);
+
+            let toReturn = {
+                pos: actualIntersection,
+                object:this,
+                surface:{}
+            };
+            toReturn.surface = {
+                normal: this.normal,
+                color: this.properties.color
+            }
+            return [toReturn];
+        }
+        return [];
+    }
+}
+
+class Shell{
+    constructor(center, outerR, innerR, properties){
+        this.center = center;
+        this.outerRadius = outerR;
+        this.innerRadius = innerR;
+        this.properties = properties;
+        this.type = 'Shell';
+        this.area = 4*Math.PI*(this.outerRadius**2 + this.innerRadius**2);
+
+        // for use in intersection algorithm
+        this.innerSphere = new Sphere(center, innerR, properties);
+        this.outerSphere = new Sphere(center, outerR, properties);
+    }
+
+    static uniform(center, outerR, innerR, color, lightSource){
+        let properties = {
+            color: color,
+            lightSource: lightSource
+        };
+        return new Shell(center, outerR, innerR, properties);
+    }
+
+    deserialize(){
+        if(this.properties.brdf){
+            this.properties.brdf.__proto__ = BRDF.prototype;
+        }
+    }
+
+    sample(){
+        // strategy very similar to that of a sphere
+        let pt = [2*Math.random()-1, 2*Math.random()-1, 2*Math.random()-1];
+        while(mag(pt) > 1){
+            pt = [2*Math.random()-1, 2*Math.random()-1, 2*Math.random()-1];
+        }
+        const direction = normalize(pt);
+
+        // choose a radius 
+        const probFirstRadius = 4*Math.PI*this.innerRadius**2 / this.area;
+        const isInner = Math.random() < probFirstRadius;
+        const chosenRadius = isInner ? this.innerRadius : this.outerRadius;
+
+        // map onto surface of sphere 
+        pt = plus(this.center, scale(chosenRadius, direction));
+        return {pt: pt, dir: isInner ? scale(-1, direction) : direction, color:this.properties.color};
+    }
+
+    intersect(ray){
+        // we separate this into 3 cases
+        // 1. If the ray starts outside the outer sphere, then compute the intersection 
+        //    as if there was only the outer sphere (it would be the first intersection)
+        // 2. If the ray starts on the inside of the inner sphere, then compute the intersection
+        //    as if there was only the inner sphere (there is guaranteed to be an intersection)
+        // 3. If the ray is in between the inner an outer sphere, there is guaranteed to 
+        //    be an intersection; use the direction of the ray to decide
+
+        function flipNormals(intersections){
+            for(let i of intersections){
+                i.surface.normal = scale(-1, i.surface.normal);;
+            }
+        }
+
+        const rayM = minus(ray.start, this.center);
+        const rayRad = mag(rayM);
+        if(rayRad >= this.outerRadius){
+            return this.outerSphere.intersect(ray);
+        }
+        if(rayRad <= this.innerRadius){
+            let intersections = this.innerSphere.intersect(ray);
+            // flip the normals on this intersection 
+            flipNormals(intersections);
+            return intersections;
+        }
+        const innerIntersections = this.innerSphere.intersect(ray);
+        if(innerIntersections.length === 0){
+            return this.outerSphere.intersect(ray);
+        }
+        // flip the normal 
+        flipNormals(innerIntersections);
+        return innerIntersections;
+    }
+}
+
 // intersect function returns list of intersections with given ray (t>0), sorted 
 // by t
 class Sphere{
