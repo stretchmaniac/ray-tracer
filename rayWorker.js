@@ -59,9 +59,9 @@ module.exports = function(self){
                 let count = 0;
                 for(let p of pts){
                     let pos = [x+p[0]-pixWidth/2, y+p[1]-pixWidth/2];
-                    let ray = camera.getRay(pos);
                     let localAverage = [0,0,0];
                     for(let j = 0; j < environment.samplesPerPoint; j++){
+                        let ray = camera.getRay(pos);
                         const resultColor = Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.rayDepth);
                         localAverage = Geometry.plus(localAverage, resultColor);
                     }

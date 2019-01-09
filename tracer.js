@@ -6,6 +6,7 @@ let colorConvert = require('color-convert');
     ATTENTION! Hey Alan, because I know you'll forget, here's what you put in the command line 
     to get browserify to auto compile:
         watchify tracer.js -o bundle.js -v
+        (arch) ~/node_modules/.bin/watchify tracer.js -o bundle.js -v
     Cheers! (You're welcome)
 
     And for you other people who don't remember, cd to the ray_tracing folder and type 
@@ -21,7 +22,7 @@ let environment = {
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:600,
+    samplesPerPoint:1,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -69,7 +70,7 @@ function initFeatures(){
 
     // cube on the ground 
     function transform(x){
-        return Geometry.plus(Geometry.scale(.05,x), [-1,-k+k/20,-2]);
+        return Geometry.plus(Geometry.scale(.03,x), [-2,k-k/20,0]);
     }
     let transformedNormals = normals.map(x => Geometry.scale(-1,x));
     for(let p = 0; p < planes.length; p++){
@@ -79,8 +80,8 @@ function initFeatures(){
         features.push(newPlane);
     }
 
-    let r = 1.5;
-    let pos = [-2,-k+r,0];
+    let r = .75;
+    let pos = [-2,k-r,k/2];
 
     // ball on the ground
     let ball = Geometry.Sphere.uniform(pos, r, [50,150,100], false);
@@ -94,7 +95,7 @@ function initFeatures(){
 
 function trace(traceFinished, basic, imageID){
     const res = 600;
-    let camera = new Geometry.Camera([-3,-5,-5.5], [[1,0,0],[0,1,0],[0,0,3]], 5, res);
+    let camera = new Geometry.Camera([-1,5,-5.5], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 42/1000, 35/1000, .1/1000, 600);
     let image = fillArray(res,res,0);
 
     let workerJobs = []
@@ -117,9 +118,9 @@ function trace(traceFinished, basic, imageID){
     }
 
     // for fun shuffle all the lists so we get a pixelated effect
-    for(let i = 0; i < workerJobs.length; i++){
-        workerJobs[i] = shuffle(workerJobs[i]);
-    }
+    // for(let i = 0; i < workerJobs.length; i++){
+    //   workerJobs[i] = shuffle(workerJobs[i]);
+    //}
 
     // let the workers run wild
     let workers = []

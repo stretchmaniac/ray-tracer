@@ -1,20 +1,66 @@
 let gaussianRand = require('gauss-random');
 
 class Camera{
-    constructor(location, orientation, lensWidth, resolution){
-        this.location = location;
+    // we model the camera as a sensor behind a convex lens. We need to know a couple things
+    // 1. focal length of the lens
+    // 2. diagonal of sensor
+    // 3. distance sensor --> lens (for zoom)
+    // 4. the radius of the lens (aperture)
+    // a so-called "normal" camera (i.e. modelled kinda after the eye) has a sensor diagonal
+    //  roughly equal to the focal length
+    // sensorLocation is the middle of the 2D plane (square) sensor, orientation is a 3 x 3 (orthogonal) rotation
+    // matrix that represents rotation from the positive z axis (sensorLocation --> lensLocation)
+    constructor(sensorLocation, orientation, focalLength, sensorLensDist, sensorDiagonal, apertureRadius, resolution){
+        this.location = sensorLocation;
         this.orientation = orientation;
-        this.lensWidth = lensWidth;
+        this.focalLength = focalLength;
+        this.sensorWidth = sensorDiagonal / Math.sqrt(2);
+        this.aperture = apertureRadius;
+        this.z = sensorLensDist;
         this.resolution = resolution;
     }
 
     // suppose the detector lies on the interval [-1,1] x [-1,1]
+    // to get depth of field, we must consider that a ray converging on a point 
+    // on the sensor may come from any point of the lens. Therefore we return a generator 
+    // that randomly samples rays that converge on unitLocation. Note that the generated 
+    // rays emanate from the plane of the lens, not the sensor
     getRay(unitLocation){
-        let rawPt = [unitLocation[0]*this.lensWidth/2, -unitLocation[1]*this.lensWidth/2, 1];
-        let rotatedPt = normalize(matColMult(this.orientation, rawPt));
-        let newRay = new Ray(plus(this.location, rotatedPt), rotatedPt);
+        // there is a question of whether light converging on unitLocation originates uniformly
+        // from the lens. It doesn't, and there's some info here http://www.timledlie.org/cs/graphics/finalproj/finalproj.html
+        // (specifically one of the papers it links to) about why that is. However, depth of field 
+        // is still a reach goal at the moment so we will not worry so much about it
+        
+        // transform unitLocation to world coordinates (location on sensor)
+        // -x and -z to correct for image mirroring (the brain flips the image)
+        let sensorPt = [-unitLocation[0]*this.sensorWidth/2,-unitLocation[1]*this.sensorWidth/2,0];
+        sensorPt = plus(this.location, matColMult(this.orientation, sensorPt));
 
-        return newRay;
+        const centerOfLens = plus(this.location, matColMult(this.orientation, [0,0,this.z]));
+
+        //console.log(sensorPt, centerOfLens);
+        //console.log(a.b.c);
+        
+        // lens equation: 1/z - 1/z' = 1/f ==> z' = 1/(1/z - 1/f)
+        // the question is what "z" is here. If we simply use the focal length 
+        // then we should get a flat plane of "in focus" stuff. If we use the distance 
+        // from the sensor location to the middle of the lens we would get a sphere of 
+        // focus. In practice I do not think it makes much of a difference
+        const zPrime = -1/(1/this.z - 1/this.focalLength);
+        const imageLoc = plus(sensorPt, scale(zPrime + this.z, normalize(minus(centerOfLens, sensorPt))));
+
+        // sample from the lens
+        let pt = [1,1];
+        while(pt[0]**2 + pt[1]**2 > 1){
+            pt = [Math.random(), Math.random()];
+        }
+        pt = [pt[0]*this.aperture, pt[1]*this.aperture];
+        let lensPt = [pt[0], pt[1], this.z];
+        // rotate, translate 
+        lensPt = matColMult(this.orientation, lensPt);
+        lensPt = plus(lensPt, this.location);
+
+        return new Ray(lensPt, normalize(minus(imageLoc, lensPt)));
     }
 }
 
@@ -953,7 +999,7 @@ function traceRay(ray, featureCollection, lightCollection, environment, maxDepth
 
         // integrate over all light path options (+ prevNode)
         let inDir = normalize(minus(currentNode.pos, prevNode.pos));
-        let = currentNode.object.properties.brdf.reflectFunc(inDir, currentNode.normal, outDir);
+        let totalWeight = currentNode.object.properties.brdf.reflectFunc(inDir, currentNode.normal, outDir);
         // apply absorption
         let absorb = c => {
             let nC = []
@@ -962,6 +1008,7 @@ function traceRay(ray, featureCollection, lightCollection, environment, maxDepth
             }
             return nC;
         }
+
         let newColor = scale(totalWeight, absorb(prevNode.rayColor));
         for(let j = 0; j < lightPath.length; j++){
             let lightNode = lightPath[j];

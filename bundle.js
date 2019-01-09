@@ -2,20 +2,66 @@
 let gaussianRand = require('gauss-random');
 
 class Camera{
-    constructor(location, orientation, lensWidth, resolution){
-        this.location = location;
+    // we model the camera as a sensor behind a convex lens. We need to know a couple things
+    // 1. focal length of the lens
+    // 2. diagonal of sensor
+    // 3. distance sensor --> lens (for zoom)
+    // 4. the radius of the lens (aperture)
+    // a so-called "normal" camera (i.e. modelled kinda after the eye) has a sensor diagonal
+    //  roughly equal to the focal length
+    // sensorLocation is the middle of the 2D plane (square) sensor, orientation is a 3 x 3 (orthogonal) rotation
+    // matrix that represents rotation from the positive z axis (sensorLocation --> lensLocation)
+    constructor(sensorLocation, orientation, focalLength, sensorLensDist, sensorDiagonal, apertureRadius, resolution){
+        this.location = sensorLocation;
         this.orientation = orientation;
-        this.lensWidth = lensWidth;
+        this.focalLength = focalLength;
+        this.sensorWidth = sensorDiagonal / Math.sqrt(2);
+        this.aperture = apertureRadius;
+        this.z = sensorLensDist;
         this.resolution = resolution;
     }
 
     // suppose the detector lies on the interval [-1,1] x [-1,1]
+    // to get depth of field, we must consider that a ray converging on a point 
+    // on the sensor may come from any point of the lens. Therefore we return a generator 
+    // that randomly samples rays that converge on unitLocation. Note that the generated 
+    // rays emanate from the plane of the lens, not the sensor
     getRay(unitLocation){
-        let rawPt = [unitLocation[0]*this.lensWidth/2, -unitLocation[1]*this.lensWidth/2, 1];
-        let rotatedPt = normalize(matColMult(this.orientation, rawPt));
-        let newRay = new Ray(plus(this.location, rotatedPt), rotatedPt);
+        // there is a question of whether light converging on unitLocation originates uniformly
+        // from the lens. It doesn't, and there's some info here http://www.timledlie.org/cs/graphics/finalproj/finalproj.html
+        // (specifically one of the papers it links to) about why that is. However, depth of field 
+        // is still a reach goal at the moment so we will not worry so much about it
+        
+        // transform unitLocation to world coordinates (location on sensor)
+        // -x and -z to correct for image mirroring (the brain flips the image)
+        let sensorPt = [-unitLocation[0]*this.sensorWidth/2,-unitLocation[1]*this.sensorWidth/2,0];
+        sensorPt = plus(this.location, matColMult(this.orientation, sensorPt));
 
-        return newRay;
+        const centerOfLens = plus(this.location, matColMult(this.orientation, [0,0,this.z]));
+
+        //console.log(sensorPt, centerOfLens);
+        //console.log(a.b.c);
+        
+        // lens equation: 1/z - 1/z' = 1/f ==> z' = 1/(1/z - 1/f)
+        // the question is what "z" is here. If we simply use the focal length 
+        // then we should get a flat plane of "in focus" stuff. If we use the distance 
+        // from the sensor location to the middle of the lens we would get a sphere of 
+        // focus. In practice I do not think it makes much of a difference
+        const zPrime = -1/(1/this.z - 1/this.focalLength);
+        const imageLoc = plus(sensorPt, scale(zPrime + this.z, normalize(minus(centerOfLens, sensorPt))));
+
+        // sample from the lens
+        let pt = [1,1];
+        while(pt[0]**2 + pt[1]**2 > 1){
+            pt = [Math.random(), Math.random()];
+        }
+        pt = [pt[0]*this.aperture, pt[1]*this.aperture];
+        let lensPt = [pt[0], pt[1], this.z];
+        // rotate, translate 
+        lensPt = matColMult(this.orientation, lensPt);
+        lensPt = plus(lensPt, this.location);
+
+        return new Ray(lensPt, normalize(minus(imageLoc, lensPt)));
     }
 }
 
@@ -125,11 +171,74 @@ class BRDF{
         return brdf;
     }
 
+    // acts like a coated glass surface
+    static variableTransparent(indexOfRefraction, frosty){
+        let brdf = {};
+        // transparency is pretty simple. We have transmitted and reflected 
+        // rays that follow the Fresnel equations 
+        // https://en.wikipedia.org/wiki/Fresnel_equations
+        // methinks we won't be modelling the polarization of the incoming wave so 
+        // we will assume that it is random
+        brdf.method = 'transparent';
+        brdf.properties = {
+            n:indexOfRefraction,
+            lobeSize:(2*frosty)**2
+        };
+        // reflection/transmission probabilities and 
+        // directions given a perfectly transparent (non-frosty) surface
+        brdf.rt = function(inVec, normal){
+            // we assume a ray with power 1, random polarization in the s and p direction 
+            const sPol = Math.random();
+            const pPol = 1 - sPol;
+            const theta = angleBetweenVecs(normal, inVec);
+            // check for total internal reflection
+            // n1 -- inside, n2 -- outside
+            // n1 sin t = n2 sin t2 ==> t2 = arcsin((n1/n2)sin(t))
+            // we assume n2 = 1 for now (and generally assume air layers of negligible thickness around everything)
+            let n1 = undefined;
+            let n2 = undefined;
+            if(dot(inVec, normal) < 0){
+                // ray is outside surface
+                n1 = 1;
+                n2 = this.n;
+            }else{
+                // ray is inside surface
+                n1 = this.n;
+                n2 = 1;
+            }
+            const inner = Math.abs((n1/n2)*Math.sin(theta));
+            if(inner > 1){
+                //total internal reflection 
+                return {
+                    // reflect, direction, probability
+                    r:{dir: normalize(reflect(inVec, normal)), p: 1},
+                    // transmit, direction, probability
+                    t:{dir: [0,0,1], p:0}
+                }
+            }
+
+            // calculate refraction angle 
+            const refractionAngle = Math.asin(inner);
+
+            // calculate reflectance
+            const Rs = ((n1*Math.cos(theta)-n2*Math.cos(refractionAngle)) / (n1*Math.cos(theta)+n2*Math.cos(refractionAngle)))**2;
+            const Rp = ((n1*Math.cos(refractionAngle)-n2*Math.cos(theta)) / (n1*Math.cos(refractionAngle)+n2*Math.cos(theta)))**2;
+
+            const totalReflectance = sPol*Rs + pPol*Rp;
+            return {
+                r: {dir:normalize(reflect(inVec, normal)), p:totalReflectance},
+                t: {dir:normalize(snell(inVec, normal, refractionAngle)), p:1-totalReflectance}
+            };
+        }
+        brdf.__proto__ = BRDF.prototype;
+        return brdf;
+    }
+
     // gives a sample of the most likely vectors to 
     // reflect in the direction of outVec
     // should return a list of rays
     inverseReflectionSample(normal, outVec, numToSample){
-        if(this.method === 'quick_n_dirty'){
+        if(this.method === 'quick_n_dirty' || this.method === 'transparent'){
             // we assume that the distribution is symmetric, so an inverse 
             // sample is the same as a normal sample 
             let samples = [];
@@ -144,33 +253,61 @@ class BRDF{
     sample(inVec, normal){
         if(this.method === 'quick_n_dirty'){
             // a little hacky, but you should have seen what I had before
-            let reflected = reflect(inVec, normal); 
-            let scaled = normalize(reflected);
-            let validDirection = false;
-            let finalPt = null;
-            while(validDirection === false){
-                let randomDirection = [Math.random()-.5, Math.random()-.5, Math.random()-.5];
-                // this gives us our direction
-                let perpComponent = minus(randomDirection, project(randomDirection, scaled));
-                perpComponent = normalize(perpComponent);
-                // now our angle difference 
-                let newAngleOffset = gaussianRand() * this.properties.lobeSize;
-                finalPt = plus(scale(Math.cos(newAngleOffset), scaled), scale(Math.sin(newAngleOffset), perpComponent));
-
-                validDirection = dot(finalPt, normal) >= 0;
+            const ref = normalize(reflect(inVec, normal)); 
+            return BRDF.gaussDir(ref, this.properties.lobeSize, normal);
+        }else if(this.method === 'transparent'){
+            const probs = this.rt(inVec, normal);
+            if(Math.random() < probs.r.p){
+                // reflection 
+                return BRDF.gaussDir(probs.r.dir, this.properties.lobeSize, normal);
+            }else{
+                // transmission 
+                return BRDF.gaussDir(probs.t.dir, this.properties.lobeSize, scale(-1, normal));
             }
-            return finalPt;
         }
+    }
+
+    static gaussDir(normDir, lobeSize, normal){
+        let validDirection = false;
+        let finalPt = null;
+        while(validDirection === false){
+            let randomDirection = [Math.random()-.5, Math.random()-.5, Math.random()-.5];
+            // this gives us our direction
+            let perpComponent = minus(randomDirection, project(randomDirection, normDir));
+            perpComponent = normalize(perpComponent);
+            // now our angle difference 
+            let newAngleOffset = gaussianRand() * lobeSize;
+            finalPt = plus(scale(Math.cos(newAngleOffset), normDir), scale(Math.sin(newAngleOffset), perpComponent));
+
+            validDirection = dot(finalPt, normal) >= 0;
+        }
+        return finalPt;
+    }
+
+    static gaussPDF(mean, stdev, test){
+        const x = test - mean;
+        return (1 / Math.sqrt(2*Math.PI*stdev**2)) * Math.E**(-1*x**2 / (2*stdev**2));
     }
 
     // gives the associated probability that an input ray reflects in the 
     // direction of outVec
     reflectFunc(inVec, normal, outVec){
         if(this.method === 'quick_n_dirty'){
-            let reflected = reflect(inVec, normal);
-            let angleDiff = angleBetweenVecs(reflected, outVec);
-            let prob = 1/(2*Math.PI)**(1/2) * Math.E**(-1*angleDiff**2 / 2);
-            return prob;
+            const reflected = reflect(inVec, normal);
+            const angleDiff = angleBetweenVecs(reflected, outVec);
+            return BRDF.gaussPDF(0, this.properties.lobeSize, angleDiff);
+        }else if(this.method === 'transparent'){
+            const epsilon = 1e-6;
+            const prob = this.rt(inVec, normal);
+            if(Math.sign(dot(normal, inVec)) === Math.sign(dot(normal, outVec))){
+                // we're looking at a transmission here
+                const angleDiff = angleBetweenVecs(prob.t.dir, outVec);
+                return prob.t.p * BRDF.gaussPDF(0, this.properties.lobeSize, angleDiff);
+            }else{
+                // looking at reflection
+                const angleDiff = angleBetweenVecs(prob.r.dir, outVec);
+                return prob.r.p * BRDF.gaussPDF(0, this.properties.lobeSize, angleDiff);
+            }
         }
     }
 }
@@ -872,6 +1009,7 @@ function traceRay(ray, featureCollection, lightCollection, environment, maxDepth
             }
             return nC;
         }
+
         let newColor = scale(totalWeight, absorb(prevNode.rayColor));
         for(let j = 0; j < lightPath.length; j++){
             let lightNode = lightPath[j];
@@ -935,6 +1073,11 @@ function normalize(a){
         throw new Error('attempt to normalize zero vector');
     }
     return scale(1/m, a);
+}
+
+function snell(inVec, normal, refractionAngle){
+    const theta = angleBetweenVecs(inVec, normal);
+    return rotateAboutAxis(inVec, normalize(cross(inVec, normal)), refractionAngle - theta);
 }
 
 function rotateAboutAxis(vec, unitAxis, theta){
@@ -1110,9 +1253,9 @@ module.exports = function(self){
                 let count = 0;
                 for(let p of pts){
                     let pos = [x+p[0]-pixWidth/2, y+p[1]-pixWidth/2];
-                    let ray = camera.getRay(pos);
                     let localAverage = [0,0,0];
                     for(let j = 0; j < environment.samplesPerPoint; j++){
+                        let ray = camera.getRay(pos);
                         const resultColor = Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.rayDepth);
                         localAverage = Geometry.plus(localAverage, resultColor);
                     }
@@ -1147,6 +1290,7 @@ let colorConvert = require('color-convert');
     ATTENTION! Hey Alan, because I know you'll forget, here's what you put in the command line 
     to get browserify to auto compile:
         watchify tracer.js -o bundle.js -v
+        (arch) ~/node_modules/.bin/watchify tracer.js -o bundle.js -v
     Cheers! (You're welcome)
 
     And for you other people who don't remember, cd to the ray_tracing folder and type 
@@ -1162,7 +1306,7 @@ let environment = {
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:600,
+    samplesPerPoint:1,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -1210,7 +1354,7 @@ function initFeatures(){
 
     // cube on the ground 
     function transform(x){
-        return Geometry.plus(Geometry.scale(.05,x), [-1,-k+k/20,-2]);
+        return Geometry.plus(Geometry.scale(.03,x), [-2,k-k/20,0]);
     }
     let transformedNormals = normals.map(x => Geometry.scale(-1,x));
     for(let p = 0; p < planes.length; p++){
@@ -1220,8 +1364,8 @@ function initFeatures(){
         features.push(newPlane);
     }
 
-    let r = 1.5;
-    let pos = [-2,-k+r,0];
+    let r = .75;
+    let pos = [-2,k-r,k/2];
 
     // ball on the ground
     let ball = Geometry.Sphere.uniform(pos, r, [50,150,100], false);
@@ -1235,7 +1379,7 @@ function initFeatures(){
 
 function trace(traceFinished, basic, imageID){
     const res = 600;
-    let camera = new Geometry.Camera([-3,-5,-5.5], [[1,0,0],[0,1,0],[0,0,3]], 5, res);
+    let camera = new Geometry.Camera([-1,5,-5.5], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 42/1000, 35/1000, .1/1000, 600);
     let image = fillArray(res,res,0);
 
     let workerJobs = []
@@ -1258,9 +1402,9 @@ function trace(traceFinished, basic, imageID){
     }
 
     // for fun shuffle all the lists so we get a pixelated effect
-    for(let i = 0; i < workerJobs.length; i++){
-        workerJobs[i] = shuffle(workerJobs[i]);
-    }
+    // for(let i = 0; i < workerJobs.length; i++){
+    //   workerJobs[i] = shuffle(workerJobs[i]);
+    //}
 
     // let the workers run wild
     let workers = []
@@ -1427,41 +1571,48 @@ convert.rgb.hsl = function (rgb) {
 };
 
 convert.rgb.hsv = function (rgb) {
-	var r = rgb[0];
-	var g = rgb[1];
-	var b = rgb[2];
-	var min = Math.min(r, g, b);
-	var max = Math.max(r, g, b);
-	var delta = max - min;
+	var rdif;
+	var gdif;
+	var bdif;
 	var h;
 	var s;
-	var v;
 
-	if (max === 0) {
-		s = 0;
+	var r = rgb[0] / 255;
+	var g = rgb[1] / 255;
+	var b = rgb[2] / 255;
+	var v = Math.max(r, g, b);
+	var diff = v - Math.min(r, g, b);
+	var diffc = function (c) {
+		return (v - c) / 6 / diff + 1 / 2;
+	};
+
+	if (diff === 0) {
+		h = s = 0;
 	} else {
-		s = (delta / max * 1000) / 10;
+		s = diff / v;
+		rdif = diffc(r);
+		gdif = diffc(g);
+		bdif = diffc(b);
+
+		if (r === v) {
+			h = bdif - gdif;
+		} else if (g === v) {
+			h = (1 / 3) + rdif - bdif;
+		} else if (b === v) {
+			h = (2 / 3) + gdif - rdif;
+		}
+		if (h < 0) {
+			h += 1;
+		} else if (h > 1) {
+			h -= 1;
+		}
 	}
 
-	if (max === min) {
-		h = 0;
-	} else if (r === max) {
-		h = (g - b) / delta;
-	} else if (g === max) {
-		h = 2 + (b - r) / delta;
-	} else if (b === max) {
-		h = 4 + (r - g) / delta;
-	}
-
-	h = Math.min(h * 60, 360);
-
-	if (h < 0) {
-		h += 360;
-	}
-
-	v = ((max / 255) * 1000) / 10;
-
-	return [h, s, v];
+	return [
+		h * 360,
+		s * 100,
+		v * 100
+	];
 };
 
 convert.rgb.hwb = function (rgb) {
