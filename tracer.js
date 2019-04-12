@@ -22,7 +22,7 @@ let environment = {
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:1,
+    samplesPerPoint:200,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -31,71 +31,90 @@ let environment = {
     rayDepth:5,
     rayBranching:1
 }
+let camera = null;
 
 const brightnessTransform = x => x;
 
 // body onload
 window.init = function(){
     initFeatures();
+    initClickDebug();
     trace(image => {
         // do nothing
     }, false, 'canvas');
 }
 
 function initFeatures(){
+    const features = [];
+    const lightFeatures  = [];
 
-    let features = [];
-    let lightFeatures  = [];
+    // floor
+    const floorHeight = .1;
+    const floor = Geometry.PolyPlane.uniform(
+        [[-5, floorHeight, -1], [-5, floorHeight, 3], [5, floorHeight, 3], [5, floorHeight, -1]], // points
+        [0,-1,0], // normal
+        [255,255,255], // color
+        false // is light source
+    );
+    floor.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
-    let k = 6;
-    let planes = [
-        [[k,k,k],[k,-k,k],[k,-k,-k],[k,k,-k]],
-        [[-k,k,k],[-k,-k,k],[-k,-k,-k],[-k,k,-k]],
-        [[k,k,k],[-k,k,k],[-k,k,-k],[k,k,-k]],
-        [[k,-k,k],[-k,-k,k],[-k,-k,-k],[k,-k,-k]],
-        [[k,k,k],[-k,k,k],[-k,-k,k],[k,-k,k]],
-        [[k,k,-k],[-k,k,-k],[-k,-k,-k],[k,-k,-k]]
-    ];
-    let normals = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
-    for(let p=0; p<planes.length; p++){
-        let plane = Geometry.PolyPlane.uniform(planes[p],normals[p],[255,255,255],p === 0 ? true : false);
-        plane.properties.brdf = Geometry.BRDF.variableGlossy(p === 3 ? .8 : .8);
-        if(p !== 1){
-            features.push(plane);
-        }
-        if(p === 0){
-            lightFeatures.push(plane);
-        }
-    }
+    // back wall 
+    const wallWidth = 1.5;
+    const wallHeight = 1;
+    const wall1 = Geometry.PolyPlane.uniform(
+        [[-wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight-wallHeight, 2], [-wallWidth/2, floorHeight-wallHeight]],
+        [0,0,-1], // normal
+        [255,255,255], //color 
+        false // is light source
+    );
+    wall1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
-    // cube on the ground 
-    function transform(x){
-        return Geometry.plus(Geometry.scale(.03,x), [-2,k-k/20,0]);
-    }
-    let transformedNormals = normals.map(x => Geometry.scale(-1,x));
-    for(let p = 0; p < planes.length; p++){
-        let transformedPlane = planes[p].map(x => transform(x));
-        let newPlane = Geometry.PolyPlane.uniform(transformedPlane, transformedNormals[p], [249, 229, 118], false);
-        newPlane.properties.brdf = Geometry.BRDF.variableGlossy(1);
-        features.push(newPlane);
-    }
+    // light source 
+    const p1 = [-.25, -.3, .9];
+    const p2 = [-.25, -.3, 1.1];
+    const p3 = [-.3,-.1,1];
+    const normal = Geometry.normalize(Geometry.cross(Geometry.minus(p2, p1), Geometry.minus(p3, p1)));
+    let light = Geometry.PolyPlane.uniform(
+        [p1, p2, p3], // points
+        normal, // normal
+        [255,255,255], // color
+        true // is light source
+    );
 
-    let r = .75;
-    let pos = [-2,k-r,k/2];
+    light = Geometry.Sphere.uniform(p1, .1, [255,255,255], true);
+    light.properties.brdf = Geometry.BRDF.variableGlossy(1);
+    light.properties.intensity = 2000;
 
-    // ball on the ground
-    let ball = Geometry.Sphere.uniform(pos, r, [50,150,100], false);
-    ball.properties.brdf = Geometry.BRDF.variableGlossy(.5);
+    // ball on floor 
+    const ball1R = .07;
+    const ball1 = Geometry.Sphere.uniform([0,floorHeight-ball1R, 1], ball1R, [255,20,20], false);
+    ball1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
-    features.push(ball);
+    features.push(floor, light, ball1, wall1);
+    lightFeatures.push(light);
 
     featureCollection = new Geometry.FeatureCollection(features);
     lightCollection = new Geometry.FeatureCollection(lightFeatures);
 }
 
+// click anywhere on the picture to send a ray with info showing up on the console
+function initClickDebug(){
+    const canvas = document.getElementById('canvas');
+    let width = canvas.clientWidth;
+    let height = canvas.clientHeight;
+    canvas.addEventListener('click', function(e){
+        let pos = [e.clientX, e.clientY];
+        let halfWidth = camera.resolution / 2;
+        let normPos = [(pos[0]-halfWidth)/halfWidth, (pos[1]-halfWidth)/halfWidth];
+        let ray = camera.getRay(normPos);
+        Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.maxRecursion, 'debug');
+    });
+}
+
 function trace(traceFinished, basic, imageID){
     const res = 600;
-    let camera = new Geometry.Camera([-1,5,-5.5], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 42/1000, 35/1000, .1/1000, 600);
+    // this makes ~1.2m focus distance
+    camera = new Geometry.Camera([0,0,0], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 37/1000, 30/1000, .01/1000, 600);
     let image = fillArray(res,res,0);
 
     let workerJobs = []

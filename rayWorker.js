@@ -44,7 +44,8 @@ module.exports = function(self){
             }
             for(let pix of locations){
                 let [x,y,samples,confidence] = pix;
-                let averageColor = [0,0,0];
+                // average spectral radiance
+                let averageSR = [0,0,0];
 
                 // generate poisson-distributed points 
                 // let pds = new PoissonDisk([10,10], 10 / samples**(1/2));
@@ -62,19 +63,22 @@ module.exports = function(self){
                     let localAverage = [0,0,0];
                     for(let j = 0; j < environment.samplesPerPoint; j++){
                         let ray = camera.getRay(pos);
-                        const resultColor = Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.rayDepth);
-                        localAverage = Geometry.plus(localAverage, resultColor);
+                        // result spectral radiance
+                        const resultSR = Geometry.traceRay(ray, featureCollection, lightCollection, environment, environment.rayDepth);
+                        localAverage = Geometry.plus(localAverage, resultSR);
                     }
-                    averageColor = Geometry.plus(averageColor, Geometry.scale(1/environment.samplesPerPoint, localAverage));
+                    averageSR = Geometry.plus(averageSR, Geometry.scale(1/environment.samplesPerPoint, localAverage));
                     count++;
                 }
-                averageColor = Geometry.scale(1/count, averageColor);
+                averageSR = Geometry.scale(1/count, averageSR);
+                // convert to color
+                averageSR = averageSR.map(x => 255*(2/(1+2**(-x/5))-1));
                 // convert x and y to image coordinates 
                 const realX = Math.floor((x+1)/2 * camera.resolution);
                 const realY = Math.floor((y+1)/2 * camera.resolution);
                 pixelBuffer[bufferIndex][0] = realX;
                 pixelBuffer[bufferIndex][1] = realY;
-                pixelBuffer[bufferIndex][2] = averageColor;
+                pixelBuffer[bufferIndex][2] = averageSR;
                 bufferIndex++;
 
                 if(bufferIndex >= updateFreq){

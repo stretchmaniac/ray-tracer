@@ -126,7 +126,9 @@ class FeatureCollection{
         if(feature === undefined){
             console.log('ERROR: random feature collection algorithm not working.');
         }
-        return feature.sample();
+        const s = feature.sample();
+        s.object = feature;
+        return s;
     }
 
     intersect(ray){
@@ -146,13 +148,20 @@ class FeatureCollection{
     }
 
     // test whether the line segment [p1, p2] is uninterrupted
-    lineSegmentValid(p1, p2){
+    lineSegmentValid(p1, p1Obj, p2, p2Obj){
+        // special case for PolyPlane
+        if(p1Obj === p2Obj && p1Obj.type === 'PolyPlane'){
+            return false;
+        }
         let ray = new Ray(p1, minus(p2, p1));
+        const eps = 1e-8;
+        ray.start = plus(ray.start, scale(eps, ray.direction));
+        const end = minus(p2, scale(eps, ray.direction));
         let intersections = this.intersect(ray);
         if(intersections.length === 0){
             return true;
         }
-        return mag(minus(p2,p1)) < mag(minus(intersections[0].pos, p1));
+        return mag(minus(ray.start,end)) < mag(minus(intersections[0].pos, p1));
     }
 }
 
@@ -163,7 +172,11 @@ class BRDF{
     static variableGlossy(n){
         let brdf = {};
         brdf.method = 'quick_n_dirty';
+        if(n === 1){
+            brdf.method = 'ideal_diffuse';
+        }
         brdf.properties = {
+            gloss:1-n,
             lobeSize:(2*n)**2
         };
         brdf.__proto__ = BRDF.prototype;
@@ -183,61 +196,64 @@ class BRDF{
             n:indexOfRefraction,
             lobeSize:(2*frosty)**2
         };
-        // reflection/transmission probabilities and 
-        // directions given a perfectly transparent (non-frosty) surface
-        brdf.rt = function(inVec, normal){
-            // we assume a ray with power 1, random polarization in the s and p direction 
-            const sPol = Math.random();
-            const pPol = 1 - sPol;
-            const theta = angleBetweenVecs(normal, inVec);
-            // check for total internal reflection
-            // n1 -- inside, n2 -- outside
-            // n1 sin t = n2 sin t2 ==> t2 = arcsin((n1/n2)sin(t))
-            // we assume n2 = 1 for now (and generally assume air layers of negligible thickness around everything)
-            let n1 = undefined;
-            let n2 = undefined;
-            if(dot(inVec, normal) < 0){
-                // ray is outside surface
-                n1 = 1;
-                n2 = this.n;
-            }else{
-                // ray is inside surface
-                n1 = this.n;
-                n2 = 1;
-            }
-            const inner = Math.abs((n1/n2)*Math.sin(theta));
-            if(inner > 1){
-                //total internal reflection 
-                return {
-                    // reflect, direction, probability
-                    r:{dir: normalize(reflect(inVec, normal)), p: 1},
-                    // transmit, direction, probability
-                    t:{dir: [0,0,1], p:0}
-                }
-            }
-
-            // calculate refraction angle 
-            const refractionAngle = Math.asin(inner);
-
-            // calculate reflectance
-            const Rs = ((n1*Math.cos(theta)-n2*Math.cos(refractionAngle)) / (n1*Math.cos(theta)+n2*Math.cos(refractionAngle)))**2;
-            const Rp = ((n1*Math.cos(refractionAngle)-n2*Math.cos(theta)) / (n1*Math.cos(refractionAngle)+n2*Math.cos(theta)))**2;
-
-            const totalReflectance = sPol*Rs + pPol*Rp;
-            return {
-                r: {dir:normalize(reflect(inVec, normal)), p:totalReflectance},
-                t: {dir:normalize(snell(inVec, normal, refractionAngle)), p:1-totalReflectance}
-            };
-        }
         brdf.__proto__ = BRDF.prototype;
         return brdf;
+    }
+
+    // reflection/transmission probabilities and 
+    // directions given a perfectly transparent (non-frosty) surface
+    rt(inVec, normal){
+        // we assume a ray with power 1, random polarization in the s and p direction 
+        const sPol = Math.random();
+        const pPol = 1 - sPol;
+        const theta = angleBetweenVecs(normal, inVec);
+        // check for total internal reflection
+        // n1 -- inside, n2 -- outside
+        // n1 sin t = n2 sin t2 ==> t2 = arcsin((n1/n2)sin(t))
+        // we assume n2 = 1 for now (and generally assume air layers of negligible thickness around everything)
+        let n1 = undefined;
+        let n2 = undefined;
+        if(dot(inVec, normal) < 0){
+            // ray is outside surface
+            n1 = 1;
+            n2 = this.n;
+        }else{
+            // ray is inside surface
+            n1 = this.n;
+            n2 = 1;
+        }
+        const inner = Math.abs((n1/n2)*Math.sin(theta));
+        if(inner > 1){
+            //total internal reflection 
+            return {
+                // reflect, direction, probability
+                r:{dir: normalize(reflect(inVec, normal)), p: 1},
+                // transmit, direction, probability
+                t:{dir: [0,0,1], p:0}
+            }
+        }
+
+        // calculate refraction angle 
+        const refractionAngle = Math.asin(inner);
+
+        //console.log(inVec, normal, theta);
+
+        // calculate reflectance
+        const Rs = ((n1*Math.cos(theta)-n2*Math.cos(refractionAngle)) / (n1*Math.cos(theta)+n2*Math.cos(refractionAngle)))**2;
+        const Rp = ((n1*Math.cos(refractionAngle)-n2*Math.cos(theta)) / (n1*Math.cos(refractionAngle)+n2*Math.cos(theta)))**2;
+
+        const totalReflectance = sPol*Rs + pPol*Rp;
+        return {
+            r: {dir:normalize(reflect(inVec, normal)), p:totalReflectance},
+            t: {dir:normalize(snell(inVec, normal, refractionAngle)), p:1-totalReflectance}
+        };
     }
 
     // gives a sample of the most likely vectors to 
     // reflect in the direction of outVec
     // should return a list of rays
     inverseReflectionSample(normal, outVec, numToSample){
-        if(this.method === 'quick_n_dirty' || this.method === 'transparent'){
+        if(this.method === 'quick_n_dirty' || this.method === 'transparent' || this.method === 'ideal_diffuse'){
             // we assume that the distribution is symmetric, so an inverse 
             // sample is the same as a normal sample 
             let samples = [];
@@ -256,13 +272,28 @@ class BRDF{
             return BRDF.gaussDir(ref, this.properties.lobeSize, normal);
         }else if(this.method === 'transparent'){
             const probs = this.rt(inVec, normal);
+            // console.log(inVec, normal, probs);
+            const matchesNormal = dot(normal, inVec) < 0;
+            const invNormal = scale(-1, normal);
             if(Math.random() < probs.r.p){
                 // reflection 
-                return BRDF.gaussDir(probs.r.dir, this.properties.lobeSize, normal);
+                return BRDF.gaussDir(probs.r.dir, this.properties.lobeSize, matchesNormal ? normal : invNormal);
             }else{
                 // transmission 
-                return BRDF.gaussDir(probs.t.dir, this.properties.lobeSize, scale(-1, normal));
+                return BRDF.gaussDir(probs.t.dir, this.properties.lobeSize, matchesNormal ? invNormal : normal);
             }
+        }else if(this.method === 'ideal_diffuse'){
+            // reflection does not depend on inVec
+            // instead sample the unit hemisphere
+            // theta \in [0, 2\pi], uniform sampling 
+            // phi \in [0, pi/2], pdf ~ sin(phi) (with z=cos(phi))
+            let theta = Math.random() * Math.PI * 2;
+            let phi = Math.acos(Math.random());
+            // create local coordinates
+            let zhat = normalize(normal);
+            let xhat = normalize(perpVec(zhat));
+            let yhat = cross(zhat, xhat);
+            return plus(scale(Math.cos(theta)*Math.sin(phi), xhat), scale(Math.sin(theta)*Math.sin(phi), yhat), scale(Math.cos(phi), zhat));
         }
     }
 
@@ -271,6 +302,9 @@ class BRDF{
         let finalPt = null;
         while(validDirection === false){
             let randomDirection = [Math.random()-.5, Math.random()-.5, Math.random()-.5];
+            while(mag(randomDirection) > .5){
+                randomDirection = [Math.random()-.5, Math.random()-.5, Math.random()-.5]
+            }
             // this gives us our direction
             let perpComponent = minus(randomDirection, project(randomDirection, normDir));
             perpComponent = normalize(perpComponent);
@@ -307,6 +341,8 @@ class BRDF{
                 const angleDiff = angleBetweenVecs(prob.r.dir, outVec);
                 return prob.r.p * BRDF.gaussPDF(0, this.properties.lobeSize, angleDiff);
             }
+        }else if(this.method === 'ideal_diffuse'){
+            return 1/(2*Math.PI);
         }
     }
 }
@@ -426,6 +462,7 @@ class Disk{
         if(dot(this.normal, normalDir) < 0){
             this.normal = scale(-1, this.normal);
         }
+        this.normal = normalize(this.normal);
         this.properties = properties;
         this.type = 'Disk';
         this.area = Math.PI*this.radius**2;
@@ -453,7 +490,7 @@ class Disk{
         }
 
         let actualPt = plus(scale(pt[0], this.v1), scale(pt[1], this.v2));
-        return {pt: actualPt, dir: this.normal, color:this.properties.color};
+        return {pt: actualPt, dir: BRDF.gaussDir(this.normal, this.properties.brdf.properties.lobeSize, this.normal), color:this.properties.color};
     }
 
     intersect(ray){
@@ -531,7 +568,9 @@ class Shell{
 
         // map onto surface of sphere 
         pt = plus(this.center, scale(chosenRadius, direction));
-        return {pt: pt, dir: isInner ? scale(-1, direction) : direction, color:this.properties.color};
+        let dir = isInner ? scale(-1, direction) : direction;
+        dir = BRDF.gaussDir(dir, this.properties.brdf.properties.lobeSize, dir);
+        return {pt: pt, dir: dir, color:this.properties.color};
     }
 
     intersect(ray){
@@ -605,11 +644,10 @@ class Sphere{
         while(mag(pt) > 1){
             pt = [2*Math.random()-1, 2*Math.random()-1, 2*Math.random()-1];
         }
-        let projection = normalize(pt);
-        let direction = projection;
+        const direction = normalize(pt);
         // map onto surface of sphere 
-        projection = plus(this.center, scale(this.radius, projection));
-        return {pt: projection, dir: direction, color:this.properties.color};
+        const projection = plus(this.center, scale(this.radius, direction));
+        return {pt: projection, dir: BRDF.gaussDir(direction, this.properties.brdf.properties.lobeSize, direction), color:this.properties.color};
     }
 
     // intersection object:
@@ -794,7 +832,7 @@ class PolyPlane{
         ];
         // now express in regular coordinates 
         let realRandomPt = plus(scale(randomPt[0], this.basis[0]), scale(randomPt[1], this.basis[1]));
-        return {pt: realRandomPt, dir: this.normal, color:this.properties.color};
+        return {pt: realRandomPt, dir: BRDF.gaussDir(this.normal, this.properties.brdf.properties.lobeSize, this.normal), color:this.properties.color};
     }
 
     deserialize(){
@@ -806,14 +844,16 @@ class PolyPlane{
     intersect(ray){
         // plane-ray intersection followed by planar polygon intersection
         let den = dot(ray.direction, this.normal);
-        if(den === 0){
+        const eps = 1e-6;
+        if(Math.abs(den) < eps){
             // this plane is infinitely thin
             return [];
         }
 
         let t = dot(this.normal, minus(this.points[0], ray.start)) / den;
 
-        if(t <= 0){
+        // NOTE: setting t <= 0 produces rings on flat surfaces
+        if(t <= eps){
             return [];
         }
 
@@ -886,145 +926,86 @@ class PolyPlane{
 }
 
 // note that featureCollection includes the light sources! (i.e. lightCollection \subset featureCollection)
-function traceRay(ray, featureCollection, lightCollection, environment, maxDepth){
-    // 1. construct bounce path
-    // 2. construct random light path
-    // 3. connect ends for bidirectional path tracing
-    let latestRay = ray;
+function traceRay(ray, featureCollection, lightCollection, environment, maxDepth, flags){
+    const debug = flags && flags === 'debug';
+
+    const normColor = (color) => {
+        let max = color[0];
+        for(let k = 1; k < 3; k++){
+            if(color[k] > max){
+                max = color[k];
+            }
+        }
+        if(max === 0){
+            return color;
+        }
+        return scale(255/max, color);
+    }
+
     let path = [];
+    let futureRay = ray;
     while(path.length < maxDepth){
-        // trace latestRay to new intersection
-        // move the ray the slightest bit forward
-        latestRay.start = plus(latestRay.start, scale(1e-8, latestRay.direction));
-        // find first collision 
-        let collisions = featureCollection.intersect(latestRay);
+        futureRay.start = plus(futureRay.start, scale(1e-8, futureRay.direction));
+        const collisions = featureCollection.intersect(futureRay);
         if(collisions.length === 0){
-            // this ray has reached the inky blackness of the utter void
-            path.push({color:[0,0,0], rayColor: [0,0,0], pos:plus(latestRay.start, latestRay.direction)});
+            path.push({
+                color:[0,0,0],
+                pos:[0,0,0] // doesn't matter where it is
+            });
             break;
         }
-        let collision = collisions[0];
 
-        let collisionObj = collision.object;
-        let collisionPos = collision.pos;
-        let normal = collision.surface.normal;
-        let color = collision.surface.color;
+        const collision = collisions[0];
+        if(debug){
+            console.log(collision.pos, collision.surface.normal, futureRay.direction);
+        }
 
-        // add to path 
-        let node = {
-            pos: collisionPos,
-            object: collisionObj,
-            normal: normal,
-            color: color
+        const pathObj = {
+            object:collision.object,
+            pos: collision.pos,
+            normal: collision.surface.normal,
+            color: collision.surface.color,
+            inDir: futureRay.direction
         };
-        path.push(node);
+        path.push(pathObj);
 
-        if(node.object.properties.lightSource){
-            node.rayColor = node.color;
-            break;
-        }
-
-        if(path.length === maxDepth){
-            node.rayColor = [0,0,0];
-        }
-
-        // now prepare to continue (i.e. reflection)
-        let newDir = collisionObj.properties.brdf.sample(latestRay.direction, normal);
-        latestRay = new Ray(collisionPos, newDir);
+        futureRay = new Ray(pathObj.pos, pathObj.object.properties.brdf.sample(pathObj.inDir, pathObj.normal));
+        pathObj.outDir = futureRay.direction;
     }
-
-    let lightSample = lightCollection.sample();
-
-    latestRay = new Ray(lightSample.pt, lightSample.dir);
-    lightPath = [
-        {pos:lightSample.pt, rayColor:lightSample.color}
-    ];
-    while(lightPath.length < maxDepth){
-        // same kinda deal as before
-        latestRay.start = plus(latestRay.start, scale(1e-8, latestRay.direction));
-        // find first collision 
-        let collisions = featureCollection.intersect(latestRay);
-        if(collisions.length === 0){
-            // this ray has reached the inky blackness of the utter void
-            break;
+    let inSpectralRadiance = [0,0,0]; // in [r,g,b], each coordinate independent
+    for(let k = path.length - 1; k >= 0; k--){
+        // we wish to compute the spectral radiance in the outward direction by the rendering equation
+        const workingNode = path[k];
+        let emissivity = 0;
+        let emissiveColor = [0,0,0];
+        // i.e. if the node is not an intersection but an endpoint (hit nothing)
+        if(workingNode.object === undefined){
+            continue;
         }
-        let collision = collisions[0];
-        let collisionObj = collision.object;
-        let collisionPos = collision.pos;
-        let normal = collision.surface.normal;
-        let color = collision.surface.color;
-
-        // add to path 
-        lightPath.push({
-            pos: collisionPos,
-            object: collisionObj,
-            normal: normal,
-            color: color
-        });
-
-        // now prepare to continue (i.e. reflection)
-        let newDir = collisionObj.properties.brdf.sample(latestRay.direction, normal);
-        latestRay = new Ray(collisionPos, newDir);
-    }
-
-    // now connect the dots
-    // we're looking for contiguous paths from a light source 
-    // to the camera
-
-    // calculate colors for lightRay, starting from the light source
-    for(let k = 1; k < lightPath.length; k++){
-        let prevNode = lightPath[k-1];
-        let currentNode = lightPath[k];
-
-        // combine color of surface with color from prevNode
-        let newColor = [0,0,0];
-        for(let j = 0; j < 3; j++){
-            newColor[j] = prevNode.rayColor[j] * currentNode.color[j] / 255;
+        if(workingNode.object.properties.lightSource){
+            emissivity = workingNode.object.properties.intensity;
+            emissiveColor = scale(1/255, normColor(workingNode.object.properties.color));
         }
-        currentNode.rayColor = newColor;
-    }
 
-    // now follow the normal ray up
-    for(let k = 1; k < path.length; k++){
-        let prevNode = path[path.length - k];
-        let currentNode = path[path.length - k - 1];
         let outDir = undefined;
-        if(k < path.length - 1){
-            let nextNode = path[path.length - k - 2];
-            outDir = normalize(minus(nextNode.pos, currentNode.pos));
+        if(k > 0){
+            outDir = normalize(minus(path[k-1].pos, workingNode.pos));
         }else{
-            let nextPos = ray.start;
-            outDir = normalize(minus(nextPos, currentNode.pos));
+            outDir = normalize(minus(ray.start, workingNode.pos));
         }
 
-        // integrate over all light path options (+ prevNode)
-        let inDir = normalize(minus(currentNode.pos, prevNode.pos));
-        let totalWeight = currentNode.object.properties.brdf.reflectFunc(inDir, currentNode.normal, outDir);
-        // apply absorption
-        let absorb = c => {
-            let nC = []
-            for(let i = 0; i < 3; i++){
-                nC.push(c[i] * currentNode.color[i] / 255);
-            }
-            return nC;
+        // brdf term cancels (as pdf function)
+        let outSpectralRadiance = plus(scale(emissivity, emissiveColor), scale(Math.abs(dot(workingNode.outDir, workingNode.normal)),inSpectralRadiance));
+        // apply absorbance via color of surface
+        outSpectralRadiance = outSpectralRadiance.map((x,i) => x * workingNode.color[i] / 255);
+        if(k === 0){
+            // convert the spectral radiance to a color
+            return outSpectralRadiance;
         }
-
-        let newColor = scale(totalWeight, absorb(prevNode.rayColor));
-        for(let j = 0; j < lightPath.length; j++){
-            let lightNode = lightPath[j];
-            // test whether this path is uninterrupted
-            if(featureCollection.lineSegmentValid(currentNode.pos, lightNode.pos)){
-                inDir = normalize(minus(currentNode.pos, lightNode.pos));
-                let weight = currentNode.object.properties.brdf.reflectFunc(inDir, currentNode.normal, outDir);
-                newColor = plus(newColor, scale(weight, absorb(lightNode.rayColor)));
-                totalWeight += weight;
-            }
-        }
-        let finalColor = scale(1/totalWeight, newColor);
-        currentNode.rayColor = finalColor;
+        inSpectralRadiance = outSpectralRadiance;
+        incomingSource = workingNode.pos;
     }
-
-    return path[0].rayColor;
+    return [0,0,0];
 }
 
 function dot(a,b){
