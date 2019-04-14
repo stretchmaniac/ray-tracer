@@ -290,7 +290,7 @@ class BRDF{
             let theta = Math.random() * Math.PI * 2;
             let phi = Math.acos(Math.random());
             // create local coordinates
-            let zhat = normalize(normal);
+            let zhat = normal;
             let xhat = normalize(perpVec(zhat));
             let yhat = cross(zhat, xhat);
             return plus(scale(Math.cos(theta)*Math.sin(phi), xhat), scale(Math.sin(theta)*Math.sin(phi), yhat), scale(Math.cos(phi), zhat));
@@ -929,19 +929,6 @@ class PolyPlane{
 function traceRay(ray, featureCollection, lightCollection, environment, maxDepth, flags){
     const debug = flags && flags === 'debug';
 
-    const normColor = (color) => {
-        let max = color[0];
-        for(let k = 1; k < 3; k++){
-            if(color[k] > max){
-                max = color[k];
-            }
-        }
-        if(max === 0){
-            return color;
-        }
-        return scale(255/max, color);
-    }
-
     let path = [];
     let futureRay = ray;
     while(path.length < maxDepth){
@@ -976,28 +963,21 @@ function traceRay(ray, featureCollection, lightCollection, environment, maxDepth
     for(let k = path.length - 1; k >= 0; k--){
         // we wish to compute the spectral radiance in the outward direction by the rendering equation
         const workingNode = path[k];
-        let emissivity = 0;
-        let emissiveColor = [0,0,0];
+        let emissivity = [0,0,0];
         // i.e. if the node is not an intersection but an endpoint (hit nothing)
         if(workingNode.object === undefined){
             continue;
         }
         if(workingNode.object.properties.lightSource){
-            emissivity = workingNode.object.properties.intensity;
-            emissiveColor = scale(1/255, normColor(workingNode.object.properties.color));
-        }
-
-        let outDir = undefined;
-        if(k > 0){
-            outDir = normalize(minus(path[k-1].pos, workingNode.pos));
-        }else{
-            outDir = normalize(minus(ray.start, workingNode.pos));
+            emissivity = scale(workingNode.object.properties.intensity/255, workingNode.color);
         }
 
         // brdf term cancels (as pdf function)
-        let outSpectralRadiance = plus(scale(emissivity, emissiveColor), scale(Math.abs(dot(workingNode.outDir, workingNode.normal)),inSpectralRadiance));
+        let outSpectralRadiance = plus(emissivity, scale(Math.abs(dot(workingNode.outDir, workingNode.normal)),inSpectralRadiance));
         // apply absorbance via color of surface
-        outSpectralRadiance = outSpectralRadiance.map((x,i) => x * workingNode.color[i] / 255);
+        for(let i = 0 ; i <= 3; i++){
+            outSpectralRadiance[i] *= workingNode.color[i]/255;
+        }
         if(k === 0){
             // convert the spectral radiance to a color
             return outSpectralRadiance;

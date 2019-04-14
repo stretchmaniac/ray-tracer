@@ -291,7 +291,7 @@ class BRDF{
             let theta = Math.random() * Math.PI * 2;
             let phi = Math.acos(Math.random());
             // create local coordinates
-            let zhat = normalize(normal);
+            let zhat = normal;
             let xhat = normalize(perpVec(zhat));
             let yhat = cross(zhat, xhat);
             return plus(scale(Math.cos(theta)*Math.sin(phi), xhat), scale(Math.sin(theta)*Math.sin(phi), yhat), scale(Math.cos(phi), zhat));
@@ -930,19 +930,6 @@ class PolyPlane{
 function traceRay(ray, featureCollection, lightCollection, environment, maxDepth, flags){
     const debug = flags && flags === 'debug';
 
-    const normColor = (color) => {
-        let max = color[0];
-        for(let k = 1; k < 3; k++){
-            if(color[k] > max){
-                max = color[k];
-            }
-        }
-        if(max === 0){
-            return color;
-        }
-        return scale(255/max, color);
-    }
-
     let path = [];
     let futureRay = ray;
     while(path.length < maxDepth){
@@ -977,28 +964,21 @@ function traceRay(ray, featureCollection, lightCollection, environment, maxDepth
     for(let k = path.length - 1; k >= 0; k--){
         // we wish to compute the spectral radiance in the outward direction by the rendering equation
         const workingNode = path[k];
-        let emissivity = 0;
-        let emissiveColor = [0,0,0];
+        let emissivity = [0,0,0];
         // i.e. if the node is not an intersection but an endpoint (hit nothing)
         if(workingNode.object === undefined){
             continue;
         }
         if(workingNode.object.properties.lightSource){
-            emissivity = workingNode.object.properties.intensity;
-            emissiveColor = scale(1/255, normColor(workingNode.object.properties.color));
-        }
-
-        let outDir = undefined;
-        if(k > 0){
-            outDir = normalize(minus(path[k-1].pos, workingNode.pos));
-        }else{
-            outDir = normalize(minus(ray.start, workingNode.pos));
+            emissivity = scale(workingNode.object.properties.intensity/255, workingNode.color);
         }
 
         // brdf term cancels (as pdf function)
-        let outSpectralRadiance = plus(scale(emissivity, emissiveColor), scale(Math.abs(dot(workingNode.outDir, workingNode.normal)),inSpectralRadiance));
+        let outSpectralRadiance = plus(emissivity, scale(Math.abs(dot(workingNode.outDir, workingNode.normal)),inSpectralRadiance));
         // apply absorbance via color of surface
-        outSpectralRadiance = outSpectralRadiance.map((x,i) => x * workingNode.color[i] / 255);
+        for(let i = 0 ; i <= 3; i++){
+            outSpectralRadiance[i] *= workingNode.color[i]/255;
+        }
         if(k === 0){
             // convert the spectral radiance to a color
             return outSpectralRadiance;
@@ -1291,7 +1271,7 @@ let environment = {
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:200,
+    samplesPerPoint:5000,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -1316,13 +1296,14 @@ window.init = function(){
 function initFeatures(){
     const features = [];
     const lightFeatures  = [];
+    const whiteColor = [220,220,220];
 
     // floor
     const floorHeight = .1;
     const floor = Geometry.PolyPlane.uniform(
         [[-5, floorHeight, -1], [-5, floorHeight, 3], [5, floorHeight, 3], [5, floorHeight, -1]], // points
         [0,-1,0], // normal
-        [255,255,255], // color
+        whiteColor, // color
         false // is light source
     );
     floor.properties.brdf = Geometry.BRDF.variableGlossy(1);
@@ -1333,33 +1314,55 @@ function initFeatures(){
     const wall1 = Geometry.PolyPlane.uniform(
         [[-wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight-wallHeight, 2], [-wallWidth/2, floorHeight-wallHeight]],
         [0,0,-1], // normal
-        [255,255,255], //color 
+        whiteColor, //color 
         false // is light source
     );
     wall1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
+    // right wall
+    const wallX = wallWidth;
+    const wall2 = Geometry.PolyPlane.uniform(
+        [[wallX, floorHeight, -1], [wallX, floorHeight, 3], [wallX, floorHeight - wallHeight, 3], [wallX, floorHeight-wallHeight, -1]],
+        [-1, 0,0], // normal 
+        whiteColor, // color
+        false // is light source
+    );
+    wall2.properties.brdf = Geometry.BRDF.variableGlossy(1);
+
+    // ceiling 
+    const ceiling = Geometry.PolyPlane.uniform(
+        [[wallX, floorHeight-wallHeight, -1],[-wallX, floorHeight-wallHeight,-1],[-wallX,floorHeight-wallHeight,3],[wallX,floorHeight-wallHeight,3]],
+        [0,1,0], // normal
+        whiteColor, // color 
+        false // is light source
+    );
+    ceiling.properties.brdf = Geometry.BRDF.variableGlossy(1);
+
     // light source 
-    const p1 = [-.25, -.3, .9];
-    const p2 = [-.25, -.3, 1.1];
-    const p3 = [-.3,-.1,1];
+    const lightHeight = 1;
+    const lightX = -.5
+    const p1 = [lightX, floorHeight, 2];
+    const p2 = [lightX, floorHeight, .5];
+    const p3 = [lightX, floorHeight - lightHeight, .5];
+    const p4 = [lightX, floorHeight - lightHeight, 2];
     const normal = Geometry.normalize(Geometry.cross(Geometry.minus(p2, p1), Geometry.minus(p3, p1)));
     let light = Geometry.PolyPlane.uniform(
-        [p1, p2, p3], // points
+        [p1, p2, p3, p4], // points
         normal, // normal
-        [255,255,255], // color
+        whiteColor, // color
         true // is light source
     );
 
-    light = Geometry.Sphere.uniform(p1, .1, [255,255,255], true);
+    //light = Geometry.Sphere.uniform(p1, .1, [255,255,255], true);
     light.properties.brdf = Geometry.BRDF.variableGlossy(1);
-    light.properties.intensity = 2000;
+    light.properties.intensity = 200;
 
     // ball on floor 
-    const ball1R = .07;
+    const ball1R = .12;
     const ball1 = Geometry.Sphere.uniform([0,floorHeight-ball1R, 1], ball1R, [255,20,20], false);
     ball1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
-    features.push(floor, light, ball1, wall1);
+    features.push(floor, light, ball1, wall1, wall2, ceiling);
     lightFeatures.push(light);
 
     featureCollection = new Geometry.FeatureCollection(features);
@@ -1383,7 +1386,7 @@ function initClickDebug(){
 function trace(traceFinished, basic, imageID){
     const res = 600;
     // this makes ~1.2m focus distance
-    camera = new Geometry.Camera([0,0,0], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 37/1000, 30/1000, .01/1000, 600);
+    camera = new Geometry.Camera([0,0,0], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 37/1000, 30/1000, .01/1000, res);
     let image = fillArray(res,res,0);
 
     let workerJobs = []

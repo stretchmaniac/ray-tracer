@@ -22,7 +22,7 @@ let environment = {
     specularStrengthConstant:2,
     specularNarrownessConstant:80,
     maxRecursion:5,
-    samplesPerPoint:200,
+    samplesPerPoint:5000,
     medium:{
         indexOfRefraction:1,
         opacity:.000,
@@ -47,13 +47,14 @@ window.init = function(){
 function initFeatures(){
     const features = [];
     const lightFeatures  = [];
+    const whiteColor = [220,220,220];
 
     // floor
     const floorHeight = .1;
     const floor = Geometry.PolyPlane.uniform(
         [[-5, floorHeight, -1], [-5, floorHeight, 3], [5, floorHeight, 3], [5, floorHeight, -1]], // points
         [0,-1,0], // normal
-        [255,255,255], // color
+        whiteColor, // color
         false // is light source
     );
     floor.properties.brdf = Geometry.BRDF.variableGlossy(1);
@@ -64,33 +65,55 @@ function initFeatures(){
     const wall1 = Geometry.PolyPlane.uniform(
         [[-wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight, 2], [wallWidth/2, floorHeight-wallHeight, 2], [-wallWidth/2, floorHeight-wallHeight]],
         [0,0,-1], // normal
-        [255,255,255], //color 
+        whiteColor, //color 
         false // is light source
     );
     wall1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
+    // right wall
+    const wallX = wallWidth;
+    const wall2 = Geometry.PolyPlane.uniform(
+        [[wallX, floorHeight, -1], [wallX, floorHeight, 3], [wallX, floorHeight - wallHeight, 3], [wallX, floorHeight-wallHeight, -1]],
+        [-1, 0,0], // normal 
+        whiteColor, // color
+        false // is light source
+    );
+    wall2.properties.brdf = Geometry.BRDF.variableGlossy(1);
+
+    // ceiling 
+    const ceiling = Geometry.PolyPlane.uniform(
+        [[wallX, floorHeight-wallHeight, -1],[-wallX, floorHeight-wallHeight,-1],[-wallX,floorHeight-wallHeight,3],[wallX,floorHeight-wallHeight,3]],
+        [0,1,0], // normal
+        whiteColor, // color 
+        false // is light source
+    );
+    ceiling.properties.brdf = Geometry.BRDF.variableGlossy(1);
+
     // light source 
-    const p1 = [-.25, -.3, .9];
-    const p2 = [-.25, -.3, 1.1];
-    const p3 = [-.3,-.1,1];
+    const lightHeight = 1;
+    const lightX = -.5
+    const p1 = [lightX, floorHeight, 2];
+    const p2 = [lightX, floorHeight, .5];
+    const p3 = [lightX, floorHeight - lightHeight, .5];
+    const p4 = [lightX, floorHeight - lightHeight, 2];
     const normal = Geometry.normalize(Geometry.cross(Geometry.minus(p2, p1), Geometry.minus(p3, p1)));
     let light = Geometry.PolyPlane.uniform(
-        [p1, p2, p3], // points
+        [p1, p2, p3, p4], // points
         normal, // normal
-        [255,255,255], // color
+        whiteColor, // color
         true // is light source
     );
 
-    light = Geometry.Sphere.uniform(p1, .1, [255,255,255], true);
+    //light = Geometry.Sphere.uniform(p1, .1, [255,255,255], true);
     light.properties.brdf = Geometry.BRDF.variableGlossy(1);
-    light.properties.intensity = 2000;
+    light.properties.intensity = 200;
 
     // ball on floor 
-    const ball1R = .07;
+    const ball1R = .12;
     const ball1 = Geometry.Sphere.uniform([0,floorHeight-ball1R, 1], ball1R, [255,20,20], false);
     ball1.properties.brdf = Geometry.BRDF.variableGlossy(1);
 
-    features.push(floor, light, ball1, wall1);
+    features.push(floor, light, ball1, wall1, wall2, ceiling);
     lightFeatures.push(light);
 
     featureCollection = new Geometry.FeatureCollection(features);
@@ -114,7 +137,7 @@ function initClickDebug(){
 function trace(traceFinished, basic, imageID){
     const res = 600;
     // this makes ~1.2m focus distance
-    camera = new Geometry.Camera([0,0,0], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 37/1000, 30/1000, .01/1000, 600);
+    camera = new Geometry.Camera([0,0,0], [[1,0,0],[0,1,0],[0,0,1]], 35/1000, 37/1000, 30/1000, .01/1000, res);
     let image = fillArray(res,res,0);
 
     let workerJobs = []
