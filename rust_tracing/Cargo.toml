@@ -1,0 +1,9 @@
+[package]
+name = "rust_tracing"
+version = "0.1.0"
+authors = ["Alan Koval <alank399@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+rand = "0.6.5"
+image = "*"
