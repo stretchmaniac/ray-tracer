@@ -14,3 +14,6 @@ To Do:
 
 Unidirectional path tracing output:
 ![Path traced sphere](https://i.imgur.com/PXCq98s.png)
+
+Update: rewritten with Rust. Now with Bounding Volume Hierarchy for faster intersection!
+![Path traced hippo](https://i.imgur.com/LVHLGRO.png)
